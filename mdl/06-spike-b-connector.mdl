@@ -1,0 +1,119 @@
+-- ============================================================================
+-- SPIKE B — replication built on the External Database Connector
+-- ============================================================================
+-- The counter-proposal to the marketplace module: no generic mapping engine,
+-- no config-as-data. Each replication set is a handful of MODEL documents that
+-- version, diff, review and deploy with the app. Underneath sits a small
+-- kernel: a cursor with an explicit overlap/settle window, an idempotent
+-- upsert on the business key, and a measured lag figure.
+--
+-- Targets ConnectorCustomer, NOT DemoCustomer, so Spike A's result stays intact
+-- and the two can be compared side by side.
+
+-- ── Connection configuration ────────────────────────────────────────────────
+-- Constants, not literals: the address is per-environment and the password is
+-- configured at deploy time rather than living in the model (MDL058).
+
+CREATE CONSTANT ReplicationLab.SourceDbUrl TYPE String
+  DEFAULT 'jdbc:postgresql://127.0.0.1:5432/sourcedb'
+  COMMENT 'JDBC URL of the replication source database';
+
+CREATE CONSTANT ReplicationLab.SourceDbUser TYPE String
+  DEFAULT 'mendix'
+  COMMENT 'Username for the replication source database';
+
+CREATE CONSTANT ReplicationLab.SourceDbPassword TYPE String
+  DEFAULT 'mendix'
+  COMMENT 'Password for the source database - override per environment'
+  PRIVATE;
+
+-- ── Query result shape (non-persistent, as the connector requires) ──────────
+
+CREATE NON-PERSISTENT ENTITY ReplicationLab.SrcCustomerRow (
+  CustomerId: Integer,
+  FullName: String(200),
+  Email: String(200),
+  City: String(100),
+  SourceUpdatedAt: DateTime
+)
+COMMENT 'One row of the customers query. Non-persistent: the connector maps results onto transient objects.';
+
+-- ── Replication target ──────────────────────────────────────────────────────
+-- The unique index on CustomerId is load-bearing: it is the business key the
+-- upsert matches on (rubric #1). Without it the whole thing degenerates into
+-- duplicate creation.
+
+CREATE PERSISTENT ENTITY ReplicationLab.ConnectorCustomer (
+  CustomerId: Integer NOT NULL,
+  FullName: String(200),
+  Email: String(200),
+  City: String(100),
+  SourceUpdatedAt: DateTime,
+  ImportedAt: DateTime
+)
+INDEX (CustomerId)
+COMMENT 'Spike B replication target: rows landed via the External Database Connector.';
+
+-- ── The cursor: watermark + window + the lag metric ────────────────────────
+-- OverlapSeconds and SettleSeconds are what design E7's commit-order gap out of
+-- existence: never read rows newer than (now - settle), and always re-read the
+-- last (overlap) seconds. Re-reading is free because the upsert is idempotent.
+
+CREATE PERSISTENT ENTITY ReplicationLab.ReplicationCursor (
+  SetName: String(100) NOT NULL UNIQUE ERROR 'One cursor per replication set',
+  Watermark: DateTime,
+  OverlapSeconds: Integer DEFAULT 300,
+  SettleSeconds: Integer DEFAULT 30,
+  LastRunStartedAt: DateTime,
+  LastRunFinishedAt: DateTime,
+  LastRunDurationMs: Long,
+  LastRunRowsRead: Long,
+  LastRunRowsUpserted: Long,
+  LagSeconds: Decimal
+)
+INDEX (SetName)
+COMMENT 'Watermark and run statistics for one replication set. LagSeconds is the SLA metric neither existing approach provides.';
+
+-- ── The external database connection ───────────────────────────────────────
+-- This IS the model. It diffs, it reviews, it deploys.
+
+CREATE DATABASE CONNECTION ReplicationLab.SourceDb
+TYPE 'PostgreSQL'
+CONNECTION STRING @ReplicationLab.SourceDbUrl
+USERNAME @ReplicationLab.SourceDbUser
+PASSWORD @ReplicationLab.SourceDbPassword
+BEGIN
+  -- Half-open window [from, to): 'to' is exclusive so a row is never both the
+  -- last of one batch and the first of the next.
+  query GetCustomersChangedSince
+    sql 'SELECT customer_id, full_name, email, city, updated_at FROM customers WHERE updated_at >= {fromTs} AND updated_at < {toTs} ORDER BY updated_at'
+    parameter fromTs: datetime
+    parameter toTs: datetime
+    returns ReplicationLab.SrcCustomerRow
+    map (
+      customer_id as CustomerId,
+      full_name as FullName,
+      email as Email,
+      city as City,
+      updated_at as SourceUpdatedAt
+    );
+END;
+
+-- ── Background execution ────────────────────────────────────────────────────
+
+CREATE QUEUE ReplicationLab.ReplicationQueue ( Parallelism: 1, ClusterWide: true );
+
+-- ── Schedule ────────────────────────────────────────────────────────────────
+-- Every 2 minutes against a <=10 minute SLA: ~5x headroom, so a missed or slow
+-- run does not breach. Points at the queued wrapper so runs are durable and
+-- never overlap (Parallelism 1 + OnOverlap DelayNext).
+
+CREATE OR MODIFY SCHEDULED EVENT ReplicationLab.SE_ReplicateCustomers (
+  Microflow: ReplicationLab.SCHQ_ReplicateCustomers,
+  Repeat: Minutely,
+  Multiplier: 2,
+  Enabled: true,
+  OnOverlap: DelayNext,
+  TimeZone: UTC,
+  StartDateTime: '2026-01-01T00:00:00Z'
+);

@@ -286,6 +286,42 @@ for 500 rows, 2-of-5 auto-mapping, the `WHERE`-less SQL, the un-propagated
 delete, the clean `git status` — came from the runtime log and from SQL against
 both databases. The browser only pressed buttons.
 
+### F15 — `ScheduledEventExecution` is not in mxcli's configuration model
+
+A blank Mendix app ships with scheduled events **off**. The runtime log says so
+plainly:
+
+```
+Core: Synchronizing scheduled events: None
+ActionManager: ActionFactory: NOT scheduling ReplicationLab.SE_ReplicateCustomers (disabled in configuration).
+```
+
+The event was created and `Enabled: true` in the model — the *configuration*
+suppresses it. And that setting cannot be reached from MDL:
+
+```
+$ ./mxcli -c "ALTER SETTINGS CONFIGURATION 'Default' ScheduledEventExecution = 'All'"
+Error: unknown configuration setting: ScheduledEventExecution
+```
+
+`ALTER SETTINGS CONFIGURATION` covers DatabaseType/Url/Name/User/Password,
+HttpPortNumber, ServerPortNumber, ApplicationRootUrl, MaxJavaHeapSize,
+ExtraJvmParameters, OpenAdminPort, OpenHttpPort — but not scheduled-event
+execution. So **a scheduled-event-driven design cannot be fully configured
+headlessly**; it needs Studio Pro or custom runtime settings.
+
+Note the symmetry with E9's finding about the module: in both cases a
+replication that looks correctly configured silently never runs, and nothing
+tells you. Worth building a startup assertion for either way.
+
+*Possible mxcli improvement:* add `ScheduledEventExecution` (and its
+`MyScheduledEvents` companion) to the configuration keys, and have
+`mxcli run --local` warn when a project contains enabled scheduled events but
+the active configuration is set to `None`.
+
+**Workaround for Spike B:** an `ACTIONBUTTON` on the dashboard calling the
+kernel directly, clicked with `playwright-cli`.
+
 ---
 
 ## Evaluation findings (Database Replication vs External Database Connector)
@@ -579,6 +615,72 @@ it migrates between environments only through the module's XML export/import.
 | 1 | Identity / business key | Yes | Yes — but the auto-mapper does not set it |
 | 5 | Change feed / watermark | Weak | **Absent by default** — full table scan every run; the watermark is SQL you write |
 | 6 | Delete detection | Yes, with a catch | Yes, **off by default**, and still incompatible with incremental (E8) |
+
+### E10 — SPIKE B: replication built on the External Database Connector (measured)
+
+The counter-proposal, built and run. Same source table, same target shape, same
+10-minute SLA. Targets `ConnectorCustomer` so Spike A's data stays intact.
+
+**What it is.** Not a mapping engine — the mapping *is* the model:
+
+| Artefact | Role |
+|---|---|
+| 3 constants | JDBC URL, user, password (password `PRIVATE`) — per-environment, never in the model as literals |
+| `SrcCustomerRow` (non-persistent) | the query's result shape |
+| `ConnectorCustomer` + `INDEX (CustomerId)` | the target, with the business key the upsert matches on |
+| `ReplicationCursor` | watermark, `OverlapSeconds`, `SettleSeconds`, run stats, and **`LagSeconds`** |
+| `SourceDb` database connection + 1 parameterised query | half-open window `updated_at >= {fromTs} AND updated_at < {toTs}` |
+| `SCH_ReplicateCustomers` | the kernel: window → query → upsert-by-key → advance cursor → record lag |
+| `ACT_GetOrCreateCursor` | first-run bootstrap (see below) |
+| `ReplicationQueue` + `SCHQ_` wrapper + `SE_` scheduled event | durable background execution, Parallelism 1, `OnOverlap: DelayNext` |
+
+**Total: 3 microflows, 3 entities, 3 constants, 1 connection, 1 queue, 1 event.**
+Against the module's 38 entities and 153 microflows. And every line of it is in
+git.
+
+#### Measured results
+
+| | Database Replication module (E9) | Spike B kernel |
+|---|---|---|
+| Initial full load, 500 rows | **129 ms** | **3 447 ms** |
+| Steady-state run | reads **all 500 rows, every time** (no `WHERE`) | reads **2 rows in 20 ms** |
+| Watermark | none by default | `updated_at` window, advanced to `now − settle` |
+| Measured lag | not provided | **30.015 s** — the settle floor, against a 600 s SLA (20× headroom) |
+| Idempotent | yes | yes — 500 rows stayed 500, changes applied in place |
+| Delete detection | mark-and-sweep, off by default, incompatible with incremental | **not implemented** — needs the reconciliation sweep (E8) |
+| Configuration lives in | rows in the app's database | **the model — `git status` shows every change** |
+
+**The module is ~27× faster on the initial bulk load, and that is a real win for
+it.** Its importer does set-based work; my kernel does a naive
+retrieve-then-commit per row. That is fixable (retrieve the existing keys in one
+query and match in memory) but it is honest as measured.
+
+**It stops mattering at steady state, and that is the point.** Once loaded, the
+kernel reads only what changed — 2 rows in 20 ms where the module re-reads the
+entire table. On a 10-million-row source under a 10-minute SLA, the module's
+every-run full scan is what breaks the SLA; a per-row loop over the handful of
+changed rows does not.
+
+#### Errors `mx check` caught that `mxcli check` did not (again)
+
+| Code | Cause |
+|---|---|
+| `CE0117` | `secondsBetween()` returns **Decimal**, assigned to a `Long` attribute. Fixed by making `LagSeconds` Decimal. |
+| `CE7033` | *"A microflow used for background execution must have a Microflow return type of 'Nothing'."* The kernel returned `Long`; a queued call cannot return anything. Fixed by recording the counts on the cursor instead — where they belong anyway. |
+| `MDL005` (this one `mxcli check` **did** catch, as a warning) | A variable assigned inside an `IF` branch is out of scope after the branches merge. Fixed by splitting the get-or-create into its own microflow with two return paths. |
+
+#### Honest gaps in Spike B
+
+- **No delete detection.** Same hole as the module's default, and it needs the
+  same fix: a second, less frequent reconciliation schedule (E8).
+- **The upsert loop is naive** — one `RETRIEVE` per row. Fine at 2 rows/run,
+  wrong at 50 000.
+- **It has not run on its own schedule.** The scheduled event exists and is
+  enabled in the model, but the runtime configuration disables all scheduled
+  events and mxcli cannot set that (F15). Driven by a button instead.
+- **The E7 commit-order gap is designed for but not yet proven** — the overlap
+  window exists; the adversarial test (hold a transaction open across a run) has
+  not been run.
 
 ### Scenarios to run (in order)
 

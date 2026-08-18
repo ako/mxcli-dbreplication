@@ -1,0 +1,126 @@
+-- ============================================================================
+-- SPIKE B — the replication kernel
+-- ============================================================================
+-- Everything the marketplace module does at runtime, expressed as ONE microflow
+-- that lives in the model. Roughly 40 lines against the module's 121 microflows
+-- and 38 entities, because the mapping is not generic: it is this set.
+
+/**
+ * Fetch the cursor for a replication set, creating it on first use.
+ *
+ * Split out of the kernel deliberately: a variable assigned inside an IF branch
+ * is not in scope after the branches merge (MDL005 / Mendix scoping), so the
+ * two cases return separately instead of converging on one variable.
+ *
+ * @param $SetName name of the replication set
+ * @returns the cursor, guaranteed to exist
+ */
+CREATE OR MODIFY MICROFLOW ReplicationLab.ACT_GetOrCreateCursor (
+  $SetName: String
+)
+RETURNS ReplicationLab.ReplicationCursor AS $Cursor
+BEGIN
+  RETRIEVE $Cursor FROM ReplicationLab.ReplicationCursor
+    WHERE SetName = $SetName LIMIT 1;
+
+  IF $Cursor = empty THEN
+    -- Start from the epoch so the first pass is a full backfill through exactly
+    -- the same code path every incremental run uses.
+    $New = CREATE ReplicationLab.ReplicationCursor (
+      SetName = $SetName,
+      Watermark = addYears([%CurrentDateTime%], -50),
+      OverlapSeconds = 300,
+      SettleSeconds = 30
+    );
+    COMMIT $New;
+    RETURN $New;
+  END IF;
+
+  RETURN $Cursor;
+END;
+/
+
+/**
+ * Replicate customers changed since the cursor watermark.
+ *
+ * Window is [watermark - overlap, now - settle). The settle lag keeps us away
+ * from rows whose transaction may not have committed yet; the overlap re-reads
+ * recent rows in case one committed late. Re-reading is harmless because the
+ * upsert is idempotent on CustomerId (E7).
+ *
+ * Returns nothing on purpose: Mendix requires a microflow executed on a task
+ * queue to have return type Nothing (CE7033). The run's numbers are recorded on
+ * the cursor instead, which is where they belong anyway - a caller cannot read
+ * a return value from a queued call.
+ */
+CREATE OR MODIFY MICROFLOW ReplicationLab.SCH_ReplicateCustomers ()
+BEGIN
+  DECLARE $RowsUpserted Long = 0;
+  DECLARE $RowsRead Long = 0;
+  DECLARE $StartedAt DateTime = [%CurrentDateTime%];
+
+  $Cursor = CALL MICROFLOW ReplicationLab.ACT_GetOrCreateCursor (SetName = 'customers');
+
+  DECLARE $From DateTime = addSeconds($Cursor/Watermark, -$Cursor/OverlapSeconds);
+  DECLARE $To DateTime = addSeconds([%CurrentDateTime%], -$Cursor/SettleSeconds);
+
+  $Rows = EXECUTE DATABASE QUERY ReplicationLab.SourceDb.GetCustomersChangedSince (
+    fromTs = $From,
+    toTs = $To
+  );
+
+  LOOP $Row IN $Rows BEGIN
+    SET $RowsRead = $RowsRead + 1;
+
+    RETRIEVE $Existing FROM ReplicationLab.ConnectorCustomer
+      WHERE CustomerId = $Row/CustomerId LIMIT 1;
+
+    IF $Existing = empty THEN
+      $Created = CREATE ReplicationLab.ConnectorCustomer (
+        CustomerId = $Row/CustomerId,
+        FullName = $Row/FullName,
+        Email = $Row/Email,
+        City = $Row/City,
+        SourceUpdatedAt = $Row/SourceUpdatedAt,
+        ImportedAt = [%CurrentDateTime%]
+      );
+      COMMIT $Created;
+    ELSE
+      CHANGE $Existing (
+        FullName = $Row/FullName,
+        Email = $Row/Email,
+        City = $Row/City,
+        SourceUpdatedAt = $Row/SourceUpdatedAt,
+        ImportedAt = [%CurrentDateTime%]
+      );
+      COMMIT $Existing;
+    END IF;
+
+    SET $RowsUpserted = $RowsUpserted + 1;
+  END LOOP;
+
+  -- Advance the watermark only to the window we actually completed, and record
+  -- lag: now minus the newest source change we have applied. This is the number
+  -- the <=10 minute SLA is written against, and the one neither the module nor
+  -- the raw connector gives you.
+  CHANGE $Cursor (
+    Watermark = $To,
+    LastRunStartedAt = $StartedAt,
+    LastRunFinishedAt = [%CurrentDateTime%],
+    LastRunRowsRead = $RowsRead,
+    LastRunRowsUpserted = $RowsUpserted,
+    LagSeconds = secondsBetween($To, [%CurrentDateTime%])
+  );
+  COMMIT $Cursor;
+
+  LOG INFO NODE 'SpikeB' 'Replicated customers';
+END;
+/
+
+-- Runs the kernel on the task queue: retries and durability come from the
+-- platform rather than from a bespoke scheduler.
+CREATE OR MODIFY MICROFLOW ReplicationLab.SCHQ_ReplicateCustomers ()
+BEGIN
+  CALL MICROFLOW ReplicationLab.SCH_ReplicateCustomers () IN QUEUE ReplicationLab.ReplicationQueue;
+END;
+/

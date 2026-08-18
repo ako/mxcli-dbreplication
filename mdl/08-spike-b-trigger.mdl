@@ -1,0 +1,25 @@
+-- Spike B — a manual trigger for the kernel.
+--
+-- Why this exists: the scheduled event is created and enabled in the model, but
+-- the runtime reports "Synchronizing scheduled events: None" because a blank
+-- Mendix app ships with ScheduledEventExecution = None, and that setting is not
+-- in mxcli's configuration model (see FINDINGS F15). So the spike is driven by
+-- a button until that is configured in Studio Pro or via custom runtime settings.
+
+ALTER PAGE ReplicationLab.Dashboard {
+  INSERT AFTER dtIntro {
+    ACTIONBUTTON btnReplicateNow (
+      Caption: 'Replicate customers now',
+      ButtonStyle: Primary,
+      Action: MICROFLOW ReplicationLab.SCH_ReplicateCustomers
+    )
+  }
+};
+
+GRANT EXECUTE ON MICROFLOW ReplicationLab.SCH_ReplicateCustomers  TO ReplicationLab.Administrator;
+GRANT EXECUTE ON MICROFLOW ReplicationLab.SCHQ_ReplicateCustomers TO ReplicationLab.Administrator;
+GRANT EXECUTE ON MICROFLOW ReplicationLab.ACT_GetOrCreateCursor   TO ReplicationLab.Administrator;
+
+GRANT ReplicationLab.Administrator ON ReplicationLab.ConnectorCustomer  (CREATE, DELETE, READ *, WRITE *);
+GRANT ReplicationLab.Administrator ON ReplicationLab.ReplicationCursor  (CREATE, DELETE, READ *, WRITE *);
+GRANT ReplicationLab.Administrator ON ReplicationLab.SrcCustomerRow     (CREATE, DELETE, READ *, WRITE *);
