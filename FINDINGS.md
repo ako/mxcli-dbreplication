@@ -153,6 +153,31 @@ never return 200.
 the same against the hub host → `302`, following redirects → GitHub's
 `/login/oauth/authorize`.
 
+### F9 — installing the modules headlessly: what mxcli does and what it leaves behind
+
+```bash
+./mxcli marketplace install 69  -p ReplicationLab.mpr   # MxModelReflection 9.1.0 — 106 units, 15 files, 49s
+./mxcli marketplace install 160 -p ReplicationLab.mpr   # DatabaseReplication 9.3.1 — 220 units, 53 files, 26s
+```
+
+`install` copies the module's units with **mxcli's own writer**, not `mx
+module-import`. That matters and is worth remembering: `module-import` rewrites
+an MPR v2 project as **v1**, collapsing `mprcontents/` into one binary `.mpr`,
+**one-way**. Since this repo depends on MPR v2 for reviewable diffs, the default
+path is the only correct one here; `--allow-format-change` opts into the legacy
+path and would destroy that. Verified: 695 `.mxunit` files before and after the
+post-install fixes — v2 preserved.
+
+A headless install leaves two repairs for Studio Pro that mxcli can do itself:
+
+```bash
+./mxcli fix widgets            -p ReplicationLab.mpr   # CE0463 → 42 unit(s) changed
+./mxcli fix design-properties  -p ReplicationLab.mpr   # CE6087 → 0 unit(s) (already in sync)
+```
+
+`fix widgets` was **not** a no-op — skipping it would have left 42 units with
+stale widget definitions.
+
 ---
 
 ## Evaluation findings (Database Replication vs External Database Connector)
@@ -177,12 +202,18 @@ From `mxcli marketplace info 160` / `versions 160` (Mendix PAT, live catalog):
 Release cadence is steady (9.0.0 Feb 2025 → 9.1.0 Apr → 9.2.0 Aug → 9.2.1 Nov →
 9.3.0 Dec 2025 → 9.3.1 Feb 2026). So "is it dead?" is answered: no.
 
-**Caveat, unverified:** the marketplace records a *minimum* Mendix version only.
-9.3.1 declares 10.24.11 and predates this app's 11.13.0 by six months; nothing in
-the metadata confirms or denies Mendix 11 compatibility. The marketplace web page
-needs a login (`marketplace.mendix.com/link/component/160` redirects to OAuth),
-so this must be settled by actually importing the `.mpk` into the 11.13.0 project
-— that is scenario 1.
+**RESOLVED — it works on Mendix 11.13.0.** The marketplace records only a
+*minimum* version (10.24.11) and the module page needs a login, so this was
+settled by installing it. Both modules were installed into the 11.13.0 project
+and:
+
+| Check | Result |
+|---|---|
+| `mx check ReplicationLab.mpr` (real Studio Pro validation, 11.13.0) | **0 errors** |
+| `mxcli run --local` → `curl http://localhost:8080/` | **HTTP 200** — boots, Java actions compile |
+
+So a six-month-old module declaring min 10.24.11 loads and runs clean on 11.13.0.
+This closes OPEN-3.
 
 ### E2 — the two approaches are not the same shape of thing
 
@@ -220,6 +251,76 @@ This is the crux of "could we do it out of the box". From the product docs:
 **This is a docs-derived hypothesis, not a measured result.** It is exactly what
 the scenarios in this app exist to confirm or break.
 
+### E4 — the footprint is large, and the mappings are *data*, not model
+
+What the two modules actually add to the app:
+
+| Module | Entities | Enums | Pages | Microflows | Java actions |
+|---|---|---|---|---|---|
+| `DatabaseReplication` 9.3.1 | 23 | 19 | 28 | 121 | 12 |
+| `MxModelReflection` 9.1.0 (dependency) | 15 | 7 | 15 | 32 | 7 |
+| **Total added** | **38** | **26** | **43** | **153** | **19** |
+
+Two observations that matter more than the raw size:
+
+**1. The configuration lives in the database, not in the model.** The module's
+own entities are `Database`, `Table`, `Column`, `TableMapping`, `ColumnMapping`,
+`Constraint`, `AdditionalJoins`, `ReferenceHandling`, `ScheduledImportActivity` —
+all **persistent**. So a table→entity mapping is a *row*, not a document. It is
+therefore **not in git, not reviewed in a merge request, and not deployed with
+the model**; it has to be migrated between environments out of band (the module
+ships `ImportExportFile` and `XMLDocumentTM`, both extending
+`System.FileDocument`, for exactly that XML export/import dance).
+
+This is the sharpest architectural contrast with the External Database
+Connector, where the connection and every query **are model documents** — they
+version, diff, review and deploy with the app like anything else. For a team that
+cares about reproducible environments, that difference likely outweighs the
+feature checklist.
+
+**2. It ships no JDBC drivers.** `userlib/` gained exactly one file,
+`replication-1.0.6.jar` (80 KB), plus its `.RequiredLib` marker. The driver for
+whatever you are replicating *from* is still yours to source, license and place.
+The "supports AS400, DB2, Informix, any JDBC" claim is a claim about the module's
+abstraction, not about batteries included.
+
+### E5 — the counter-argument: build persistence on the connector instead
+
+Raised by the project owner, and it is a strong one. The connector's lack of
+persistence is not a wall, because the missing pieces already exist elsewhere in
+the platform:
+
+- **Persist the rows** — have the *source database* emit a **multi-table JSON
+  document** (`json_agg` in PostgreSQL, `FOR JSON` in SQL Server, `JSON_OBJECT`
+  in Oracle), pull it through the connector, and run it through a Mendix **import
+  mapping** into several persistent entities at once. Import mappings resolve
+  **associations** natively, which is the single hardest thing to hand-roll.
+- **Background sync** — **task queues** (retry, parallelism, durable) or plain
+  **scheduled events**, both first-class platform features.
+
+If that holds, the honest comparison stops being "module vs nothing" and becomes
+"module's config-as-data UI vs a handful of model artefacts you own". And the
+built version wins on the things E4 flags: mappings become model, so they
+version and deploy; no 38 extra entities; no Mx Model Reflection dependency.
+
+**What has to be tested before believing it** — three specific risks, none of
+them fatal-looking, all unverified:
+
+1. **Payload size through the connector.** The connector documents *primitive
+   column types only*, so a JSON document arrives as a string. Whether a large
+   aggregate survives that path intact, and at what size it stops being sane, is
+   unknown. (Note the irony: the module's stated weakness is *no CLOB support* —
+   the connector may have its own version of the same limit.)
+2. **Source-side SQL burden.** Emitting nested JSON is real SQL work per table
+   group, and it is dialect-specific — which is one of the module's stated
+   weaknesses too, so this is a wash rather than a win.
+3. **Change detection is not solved by either approach.** Incremental loads still
+   need a watermark column or CDC at source. And **neither** approach detects
+   rows *deleted* at source: the module's create-and-synchronize modes do not
+   remove Mendix objects whose source row is gone, and a JSON import will not
+   either. Any "replication" claim that matters operationally has to answer this,
+   and today the answer for both is "you handle it".
+
 ### Scenarios to run (in order)
 
 1. Import `DatabaseReplication` 9.3.1 + `Mx Model Reflection` into the 11.13.0
@@ -233,6 +334,14 @@ the scenarios in this app exist to confirm or break.
 6. A CLOB/large-text column, to confirm the module's stated limitation. (E2)
 7. A write-back (INSERT/UPDATE at source) — connector only; establishes the
    capability the module lacks.
+8. **E5 spike:** `json_agg` a customers+orders graph in PostgreSQL, pull it via
+   the connector, import-map it into `DemoCustomer` + `DemoOrder` with the
+   association resolved. Measure the payload ceiling. (E5 risk 1)
+9. **E5 spike:** drive scenario 8 from a **task queue** and from a **scheduled
+   event**; compare against the module's scheduled import activity for retry
+   behaviour and observability.
+10. **Delete detection**, both approaches: remove a row at source, re-run, and
+    record what each does with the orphaned Mendix object. (E5 risk 3)
 
 ---
 
@@ -245,9 +354,12 @@ the scenarios in this app exist to confirm or break.
 - **OPEN-2** — *resolved by F7*: `MENDIX_PAT` is set in this environment, so
   `mxcli marketplace` works. Note the env var is environment-provided; a fresh
   environment without it falls back to `mxcli auth login`.
-- **OPEN-3** — whether `DatabaseReplication` 9.3.1 (min Mendix 10.24.11) works on
-  Mendix 11.13.0. Marketplace metadata records no maximum, and the module page
-  needs a login. Settle it by importing the `.mpk` — scenario 1 above.
+- **OPEN-3** — *resolved*: `DatabaseReplication` 9.3.1 + `MxModelReflection`
+  9.1.0 install into 11.13.0 with `mx check` reporting **0 errors** and the app
+  booting HTTP 200. See E1.
+- **OPEN-5** — installing was verified; *configuring and running* a replication
+  was not. Everything in E2/E4 about mapping and sync behaviour is still
+  docs-derived, and the module's config UI has not been opened.
 - **OPEN-4** — the domain model, security and pages are written as MDL under
   `mdl/` and pass `mxcli check`, but have **not been executed**. Nothing in the
   `.mpr` reflects them yet.
