@@ -230,6 +230,62 @@ them defects. Grouped:
 Recorded rather than "fixed": suppressing them by rewriting the model to satisfy
 conventions the project has not adopted would make it worse, not better.
 
+### F13 — `playwright-cli` is missing in this environment by construction
+
+`.devcontainer/Dockerfile` installs it (`npm install -g @playwright/cli@0.1.15`
+plus the bundled Chromium at `/usr/local/bin/mx-headless-shell`), and
+`.playwright/cli.config.json` points at that symlink. But **Claude Code on the
+web does not build or run the devcontainer**, so in this session:
+
+```
+$ ./mxcli playwright open http://localhost:8080
+Error: opening browser: exec: "playwright-cli": executable file not found in $PATH
+```
+
+That means `mxcli playwright` **and the `/test` slash command** are inoperative
+here out of the box, even though the repo is configured correctly for the
+devcontainer path.
+
+**Workaround used for Spike A (E9):** `npm i playwright` into a scratch dir and
+drive Chromium directly at
+`/opt/pw-browsers/chromium-1194/chrome-linux/chrome` (the image's pre-installed
+browser; `PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers`). Note this is the **full**
+chromium build, not the `chromium_headless_shell-*` one the devcontainer config
+expects.
+
+**To fix properly in this environment:**
+
+```bash
+npm install -g @playwright/cli@0.1.15
+node "$(npm root -g)/@playwright/cli/node_modules/playwright-core/cli.js" \
+  install chromium chromium-headless-shell
+ln -sf /opt/pw-browsers/chromium_headless_shell-*/chrome-linux/headless_shell \
+  /usr/local/bin/mx-headless-shell
+```
+
+*Possible mxcli improvement:* `mxcli playwright open` could fall back to a
+locally-installed `playwright` package, or say "run this to install it" rather
+than reporting a bare `executable file not found`.
+
+### F14 — how much the missing CLI actually cost, honestly
+
+Driving Mendix's UI with raw Playwright rather than `playwright-cli`'s
+snapshot/ref model cost roughly **3 of ~12 iterations**:
+
+| Friction | Would `playwright-cli` have helped? |
+|---|---|
+| Widget ids carry a per-session suffix (`textBox6_caf_634`) | **Yes** — `snapshot` returns stable refs (`e12`), removing the label→id resolver entirely |
+| Two "Save" buttons — the page's and the modal's — and the page one won | **Yes** — the snapshot shows containment, so the modal's Save is its own ref |
+| The Atlas sidebar overlays the content and intercepts pointer events | **No** — `click eNN` goes through the same Playwright actionability checks and would hit the same `<div class="mx-underlay"> intercepts pointer events`. The fix either way is to dispatch on the element (`playwright-cli eval "() => …click()"`) |
+| Column list empty until a Table alias is chosen | **No** — app behaviour |
+| Import silently no-ops on an unvalidated mapping | **No** — this is a *finding*, not a tooling problem |
+| "New" persists an orphan row on cancel | **No** — likewise |
+
+**No finding in E9 depends on the browser driver.** Every measurement — 129 ms
+for 500 rows, 2-of-5 auto-mapping, the `WHERE`-less SQL, the un-propagated
+delete, the clean `git status` — came from the runtime log and from SQL against
+both databases. The browser only pressed buttons.
+
 ---
 
 ## Evaluation findings (Database Replication vs External Database Connector)
