@@ -80,6 +80,27 @@ if [ ! -x ./mxcli ]; then
   fi
 fi
 
+# playwright-cli powers `mxcli playwright` and the /test command. The
+# devcontainer Dockerfile installs it, but Claude Code on the web does not run
+# the devcontainer, so on that path it has to be installed here. Pinned to the
+# same version as the Dockerfile; never fatal, since UI testing must not block a
+# session. Chromium comes from the image (PLAYWRIGHT_BROWSERS_PATH), and the
+# headless-shell build is symlinked where .playwright/cli.config.json expects it.
+if ! command -v playwright-cli >/dev/null 2>&1; then
+  echo "playwright-cli not found — installing (needed by 'mxcli playwright' and /test)..."
+  {
+    npm install -g @playwright/cli@0.1.15 &&
+    node "$(npm root -g)/@playwright/cli/node_modules/playwright-core/cli.js" \
+      install chromium chromium-headless-shell
+  } || echo "playwright-cli install failed; browser verification unavailable." >&2
+fi
+# Point the stable path at the newest headless-shell build present.
+if [ ! -x /usr/local/bin/mx-headless-shell ]; then
+  shell_bin=$(ls -d /opt/pw-browsers/chromium_headless_shell-*/ 2>/dev/null | sort -V | tail -1)
+  [ -n "$shell_bin" ] && bin=$(find "$shell_bin" -name 'chrome-headless-shell' -o -name 'headless_shell' 2>/dev/null | head -1)
+  [ -n "$bin" ] && ln -sf "$bin" /usr/local/bin/mx-headless-shell
+fi
+
 # Keep .ai-context/skills/ in step with this binary. The skills are embedded in
 # mxcli and written once by 'mxcli init', so upgrading the binary used to leave
 # yesterday's guidance in place with no warning — and an agent reads stale

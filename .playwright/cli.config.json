@@ -4,7 +4,11 @@
     "isolated": true,
     "launchOptions": {
       "headless": true,
-      "executablePath": "/usr/local/bin/mx-headless-shell"
+      "executablePath": "/usr/local/bin/mx-headless-shell",
+      "chromiumSandbox": false,
+      "args": [
+        "--no-sandbox"
+      ]
     }
   },
   "timeouts": {
