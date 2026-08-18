@@ -366,12 +366,69 @@ them fatal-looking, all unverified:
 2. **Source-side SQL burden.** Emitting nested JSON is real SQL work per table
    group, and it is dialect-specific — which is one of the module's stated
    weaknesses too, so this is a wash rather than a win.
-3. **Change detection is not solved by either approach.** Incremental loads still
-   need a watermark column or CDC at source. And **neither** approach detects
-   rows *deleted* at source: the module's create-and-synchronize modes do not
-   remove Mendix objects whose source row is gone, and a JSON import will not
-   either. Any "replication" claim that matters operationally has to answer this,
-   and today the answer for both is "you handle it".
+3. **Change detection.** Incremental loads still need a watermark column or CDC
+   at source, in both approaches. On *deletes* the two differ — see E8: the
+   module has mark-and-sweep, but not usable at the same time as an incremental
+   load; a hand-built JSON import has neither unless you write it.
+
+### E6 — a 9-point rubric for judging *any* replication approach
+
+Derived from the question "relational source, replicate a subset, ≤10 minutes
+delay". Ordered by how much it hurts when missing. Module column is scored from
+its own domain model (`DESCRIBE ENTITY DatabaseReplication.*`), not from docs.
+
+| # | Abstraction | Database Replication module | Evidence |
+|---|---|---|---|
+| 1 | **Identity / business key** — which columns decide "same row as last time" | **Yes**, well | `ColumnMapping.IsKey`, `IsAssociationKey`, `SearchCaseSensitive` |
+| 2 | **Subset**, vertical *and* horizontal | **Yes** | `TableMapping.SQLConstraint` (unlimited) + structured `Constraint` entity with operators and left/right columns |
+| 3 | **Projection + association resolution** | **Yes**, thoughtfully | `ReferenceHandling.Handling` = FindCreate / FindIgnore / CreateEverything / OnlyCreateNewObjects; `DataHandling` = Overwrite / Append |
+| 4 | **Write semantics** (upsert policy) | **Yes** | `ImportAction` = Create all / Synchronize-and-create / Synchronize-existing-only / Only-create-new |
+| 5 | **Change feed / watermark** | **Weak** | `ScheduledImportActivity.LastImportedOn` + `LastImportStartedOn` — a plain `DateTime`, no visible overlap window (see E7) |
+| 6 | **Delete detection** | **Yes, with a catch** | `TableMapping.RemoveUnsyncedObjects` = TrackChanges / RemoveUnchangedObjects / Nothing, driven by `ReplicationStatus.NewRemoveIndicatorValue` / `PreviousRemoveIndicatorValue`, counted in `NrOfObjectsRemoved` (see E8) |
+| 7 | **Ordering / dependencies** | **Yes** | `ScheduledImportActivity.SortOrder`, chained `ImportCall` with `ConstraintDependency` |
+| 8 | **Run observability** | **Partial** | Counters Synchronized/Created/NotFound/Skipped/Removed + Succesfull/Failed/FailedBeforeConnecting. **No duration, no lag metric** — and lag *is* the SLA |
+| 9 | **Failure policy** | **Partial** | `UseTransactions`, `ImportInNewContext`, `Mode`. No dead-letter / poison-row quarantine |
+
+**Score: 7 of 9 present, 2 partial.** This is a meaningful upward revision of the
+first read in E2/E3, which under-credited the module by reasoning from its
+documentation instead of its model.
+
+### E7 — the watermark is timestamp-based, which has a known correctness gap
+
+`WHERE updated_at > :last_run` loses rows: a transaction that *starts* before the
+cursor is taken but *commits* after it writes rows whose `updated_at` is below
+the new high-water mark, yet were invisible at read time. They are skipped
+permanently. PostgreSQL's `xmin` does not help — it is transaction-assignment
+order, not commit order.
+
+Mitigations, cheapest first:
+
+1. **Lag-and-overlap window** — read `updated_at` in
+   `[last_run − overlap, now() − settle]` and make the apply idempotent, so
+   re-reading rows costs nothing. A 10-minute SLA has ample room for this.
+2. **Commit-ordered tokens** — SQL Server `rowversion` / Change Tracking, Oracle
+   SCN. PostgreSQL has no clean native equivalent short of logical replication or
+   a trigger-maintained sequence.
+
+The module exposes `LastImportedOn` and `LastImportStartedOn` but no
+overlap/settle setting. **Whether it mitigates this internally is unverified** —
+scenario 11.
+
+### E8 — delete detection and incremental loading are mutually exclusive here
+
+Mark-and-sweep requires a **full** scan: whatever this run did not touch is
+presumed deleted. Run the same mapping incrementally and every unchanged row
+looks deleted. So under a ≤10 minute SLA you want incremental — and then
+`RemoveUnsyncedObjects` has to be `Nothing`.
+
+Resolution, whichever tool wins: **two schedules, not one** — frequent
+incremental for freshness, plus a periodic full or key-only reconciliation sweep
+for deletes. Worth designing in from the start.
+
+**Correction to an earlier note in this file:** an earlier revision of E5 claimed
+neither approach detects deletes. That was wrong about the module — it has
+mark-and-sweep. The accurate statement is the one above: it has delete detection,
+but not simultaneously with incremental loading.
 
 ### Scenarios to run (in order)
 
@@ -393,7 +450,16 @@ them fatal-looking, all unverified:
    event**; compare against the module's scheduled import activity for retry
    behaviour and observability.
 10. **Delete detection**, both approaches: remove a row at source, re-run, and
-    record what each does with the orphaned Mendix object. (E5 risk 3)
+    record what each does with the orphaned Mendix object. (E8)
+11. **Watermark gap under concurrent commits:** hold a transaction open across a
+    scheduled import, commit it after the run, and check whether its rows are
+    ever picked up. Directly tests E7 against the module.
+12. **Incremental + sweep together:** run a 2-minute incremental alongside a
+    periodic full reconciliation and confirm the sweep does not delete rows the
+    incremental simply did not touch. (E8)
+13. **Measured lag vs the 10-minute target:** instrument
+    `now − max(source watermark successfully applied)` — the metric neither
+    approach provides — and record it under load.
 
 ---
 
