@@ -178,6 +178,58 @@ A headless install leaves two repairs for Studio Pro that mxcli can do itself:
 `fix widgets` was **not** a no-op — skipping it would have left 42 units with
 stale widget definitions.
 
+### F10 — `mx check` caught three things `mxcli check` did not
+
+All four `mdl/` scripts passed `mxcli check` with 0 errors and 0 warnings, and
+executed cleanly. The **real** Studio Pro validation then found three errors:
+
+| Code | What it caught | Fix |
+|---|---|---|
+| `CE0156` ×2 | `User role should have at least one System module role` — a user role built only from application module roles cannot sign in or touch System entities. | `CREATE USER ROLE Evaluator (ReplicationLab.Evaluator, System.User)` — always include `System.User`. |
+| `CE5601` | `The URL property of this Page is missing a parameter segment for parameter "Scenario"` — a page with both a parameter *and* a URL must name the parameter in the URL. | `Url: 'scenario/{Scenario}'` |
+
+Neither is exotic; both are the kind of thing that only shows up at real
+validation. **Lesson for this repo: `mxcli check` is necessary but not
+sufficient — run `mx check` (or `mxcli docker check`) after every `exec`.**
+
+*Possible mxcli improvement:* both rules are statically decidable from the MDL
+alone (a `CREATE USER ROLE` with no System module role; a `CREATE PAGE` with
+`Params` and a `Url` lacking a `{...}` segment) and would be cheap additions to
+`check`.
+
+**Verified:** `mx check ReplicationLab.mpr` → 3 errors before the fixes, **0
+errors** after; app boots **HTTP 200**.
+
+### F11 — a pre-existing user role name collides; extend, do not create
+
+`CREATE USER ROLE Administrator (...)` would have collided: the blank template
+already ships an `Administrator` user role, and installing the marketplace
+modules had already extended it to 3 module roles. Checking `SHOW USER ROLES`
+first and switching to `ALTER USER ROLE Administrator ADD MODULE ROLES (...)`
+avoided it. Worth doing before any security script that names common roles.
+
+Related: the blank template ships **security level `Off`**, which means access
+rules are stored but not enforced. The script now ends with
+`ALTER PROJECT SECURITY LEVEL PROTOTYPE` — without it, every `GRANT` above is
+decorative at runtime.
+
+### F12 — the lint profile is stricter than this app wants
+
+`mxcli lint` reports **101 issues: 0 errors, 23 warnings, 78 info** — none of
+them defects. Grouped:
+
+| Rule | Count | Verdict here |
+|---|---|---|
+| `CONV007` unconstrained READ/WRITE (no XPath on every access rule) | 32 | **Not applicable.** This is a single-tenant evaluation sandbox; there are no rows to scope *to*. |
+| `QUAL002` missing documentation | 25 | Mostly the marketplace modules' own documents. |
+| `CONV006` grants CREATE/DELETE instead of routing through a microflow | 22 | **Deliberate.** An Administrator entering a source database by hand is the point of the app. |
+| `CONV015` entity has validation rules | 6 | Side effect of `NOT NULL`/`UNIQUE` in the MDL — those *are* validation rules. |
+| `CONV004`/`CONV003` naming (`ENUM_` prefix, `Entity_NewEdit` page suffixes) | 11 | House style this project did not adopt. |
+| `CONV008`, `SEC008`, `QUAL004` | 3 | Two module roles per user role; the template's own unused microflow. |
+
+Recorded rather than "fixed": suppressing them by rewriting the model to satisfy
+conventions the project has not adopted would make it worse, not better.
+
 ---
 
 ## Evaluation findings (Database Replication vs External Database Connector)

@@ -7,9 +7,15 @@ CREATE OR MODIFY MODULE ROLE ReplicationLab.Administrator DESCRIPTION 'Full acce
 CREATE OR MODIFY MODULE ROLE ReplicationLab.Evaluator     DESCRIPTION 'Creates and runs scenarios, records findings; cannot change connection settings';
 CREATE OR MODIFY MODULE ROLE ReplicationLab.Viewer        DESCRIPTION 'Read-only access to scenarios, runs and findings';
 
-CREATE USER ROLE Administrator (ReplicationLab.Administrator) MANAGE ALL ROLES;
-CREATE USER ROLE Evaluator     (ReplicationLab.Evaluator);
-CREATE USER ROLE Viewer        (ReplicationLab.Viewer);
+-- An 'Administrator' user role already exists (the blank template's, since
+-- extended by the Administration, DatabaseReplication and MxModelReflection
+-- module roles), so extend it rather than colliding with it.
+ALTER USER ROLE Administrator ADD MODULE ROLES (ReplicationLab.Administrator);
+-- System.User is not optional: Mendix rejects a user role with no System module
+-- role (CE0156), because that is what grants sign-in and access to System
+-- entities. mxcli's own `check` does not catch this — only `mx check` does.
+CREATE USER ROLE Evaluator (ReplicationLab.Evaluator, System.User);
+CREATE USER ROLE Viewer    (ReplicationLab.Viewer, System.User);
 
 -- ── Administrator: everything ────────────────────────────────────────────────
 GRANT ReplicationLab.Administrator ON ReplicationLab.SourceDatabase     (CREATE, DELETE, READ *, WRITE *);
@@ -40,3 +46,15 @@ GRANT ReplicationLab.Viewer ON ReplicationLab.ScenarioRun        (READ *);
 GRANT ReplicationLab.Viewer ON ReplicationLab.Finding            (READ *);
 GRANT ReplicationLab.Viewer ON ReplicationLab.DemoCustomer       (READ *);
 GRANT ReplicationLab.Viewer ON ReplicationLab.DemoOrder          (READ *);
+
+-- ── Turn security on ─────────────────────────────────────────────────────────
+-- The blank template ships security level Off, which means none of the rules
+-- above actually apply at runtime. Prototype enforces roles and page/entity
+-- access while keeping demo users available — the right level for a sandbox.
+-- Raise to PRODUCTION (and drop the demo users) before this goes anywhere real.
+ALTER PROJECT SECURITY LEVEL PROTOTYPE;
+
+-- Demo logins for the two new roles. These passwords are in the committed model
+-- on purpose: this app is a local evaluation harness, never a deployed system.
+CREATE DEMO USER 'demo_evaluator' PASSWORD 'EvaluatorDemo123' (Evaluator);
+CREATE DEMO USER 'demo_viewer'    PASSWORD 'ViewerDemo123'    (Viewer);

@@ -79,7 +79,8 @@ CREATE PAGE ReplicationLab.Scenario_Detail
     Title: 'Scenario',
     Layout: Atlas_Core.Atlas_Default,
     Params: { $Scenario: ReplicationLab.EvaluationScenario },
-    Url: 'scenario',
+    -- A page with a parameter needs a parameter segment in its URL (CE5601).
+    Url: 'scenario/{Scenario}',
     Folder: 'Scenarios'
   )
   {
