@@ -1,0 +1,12 @@
+-- ReplicationLab — navigation
+-- Dashboard is home; the four working areas are one click away.
+
+CREATE OR REPLACE NAVIGATION Responsive
+  HOME PAGE ReplicationLab.Dashboard
+  MENU (
+    MENU ITEM 'Dashboard'        PAGE ReplicationLab.Dashboard                ICON Atlas_Core.Atlas.home;
+    MENU ITEM 'Source databases' PAGE ReplicationLab.SourceDatabase_Overview  ICON Atlas_Core.Atlas.server;
+    MENU ITEM 'Scenarios'        PAGE ReplicationLab.Scenario_Overview        ICON Atlas_Core.Atlas."list-bullets";
+    MENU ITEM 'Findings'         PAGE ReplicationLab.Finding_Overview         ICON Atlas_Core.Atlas.checkmark;
+    MENU ITEM 'Replicated data'  PAGE ReplicationLab.ReplicatedData_Overview  ICON Atlas_Core.Atlas."data-transfer";
+  );

@@ -1,0 +1,14 @@
+.popup-padding {
+	.mx-window-body {
+		padding: 10px;
+	}
+}
+
+.ensure-combo-box-size {
+	.widget-combobox-menu {
+		min-width: fit-content !important;
+	}
+	.widget-combobox-menu-list {
+		min-width: fit-content !important;
+	}
+}
