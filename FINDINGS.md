@@ -430,6 +430,100 @@ neither approach detects deletes. That was wrong about the module — it has
 mark-and-sweep. The accurate statement is the one above: it has delete detection,
 but not simultaneously with incremental loading.
 
+### E9 — SPIKE A: the module actually run, end to end (measured, not inferred)
+
+Everything above this point was read from documentation and from the module's
+domain model. This section is the first section based on **running it**.
+
+**Setup.** A real source database on the same PostgreSQL 16.13 instance:
+`sourcedb` with `customers` (500 rows) and `orders` (2000 rows), both carrying an
+`updated_at` column maintained by a `BEFORE UPDATE` trigger, indexed — i.e. a
+watermark that actually works. Mapping configured entirely through the module's
+own web UI, driven with Playwright.
+
+#### What worked, and well
+
+| Step | Result |
+|---|---|
+| Connect to PostgreSQL | Worked with **no extra JDBC driver** — the Mendix runtime already ships one. (Oracle/DB2/Informix would still need their own; see E4.) |
+| Credential storage | **Encrypted at rest**: `databasepassword_encrypted` holds `AES/GCM/NoPadding;…`, and the plaintext column holds the literal placeholder `ThisIsConvertedToAnEncryptedPass`. A genuine strength. |
+| Schema sync | Read both tables and all 12 columns with correct types (`int4`, `varchar`, `timestamp`, `numeric`) by querying `pg_class`/`pg_attribute`/`pg_namespace`. |
+| Import 500 rows | **129 ms** end to end (`18:53:39.451` → `18:53:39.580`). Performance is not the problem. |
+| Idempotency | Re-running did **not** duplicate: 500 rows stayed 500 (+1 for a new source row). Key matching on `customer_id` works exactly as advertised. |
+| Update propagation | Changing `city` at source propagated on the next run. ✅ |
+| Insert propagation | A new source row appeared on the next run. ✅ |
+
+#### What the run revealed that the docs did not
+
+**1. The default is a FULL load — there is no incremental behaviour out of the box.**
+The generated SQL, straight from the runtime log:
+
+```sql
+SELECT "mainTable"."customer_id" AS "CustomerId", "mainTable"."city" AS "City",
+       "mainTable"."full_name" AS "FullName", "mainTable"."updated_at" AS "SourceUpdatedAt",
+       "mainTable"."email" AS "Email"
+FROM "customers" AS "mainTable"
+```
+
+**No `WHERE` clause.** Every run reads the entire table. Incremental loading is
+not a mode you switch on — it is a `SQLConstraint` you write yourself, and the
+watermark plumbing (E7) is yours to get right. This substantially revises rubric
+point 5 downward: the module gives you a *place* to put a watermark, not a
+watermark.
+
+**2. Deletes are not propagated by default.** After deleting `customer_id = 2` at
+source and re-running: **source 500 rows, Mendix 501**, with customer 2 still
+present. Exactly as E8 predicts — `RemoveUnsyncedObjects` defaults to `Nothing`.
+Nothing warns you.
+
+**3. The auto-mapper is exact-name-match only, and never sets a key.**
+"Connect matching attributes" against `customers` → `DemoCustomer` mapped
+**2 of 5** columns — `city`→`City` and `email`→`Email`, the two that happen to
+match case-insensitively. It missed `customer_id`→`CustomerId`,
+`full_name`→`FullName`, `updated_at`→`SourceUpdatedAt`: i.e. **every snake_case
+name**, which is most of a real PostgreSQL or Oracle schema. And `iskey` was
+`false` on both columns it did map — so the auto-generated mapping has **no
+business key at all** (rubric #1, silently absent). Accepting the auto-map and
+importing would upsert against nothing.
+
+**4. The Mendix attribute is bound by a typed string, not a model reference.**
+The "Attribute name" field is a plain textbox writing
+`ColumnMapping.FindAttribute: String(200)`. A typo is not a broken reference —
+it is a wrong string, caught only by "Validate all" or at import.
+
+**5. "Import the data" silently does nothing on an unvalidated mapping.**
+First import attempt: 0 rows, no error, no message, nothing in the log. The cause
+was `TableMapping.Valid = No`; running "Validate all" first flipped it to `Yes`
+and the same button then imported 500 rows. A no-op with no feedback is a poor
+failure mode.
+
+**6. Every "New" click persists an empty row immediately.** Opening the
+column-mapping dialog and abandoning it leaves an orphan `ColumnMapping` record.
+Ten accumulated during this spike and had to be deleted directly in the database.
+
+#### E4 confirmed, decisively
+
+After configuring the connection, the schema sync, the table mapping and all five
+column mappings:
+
+```
+$ git status --short
+(empty)
+```
+
+**Not one byte of it is in the model.** It is rows in `databasereplication$database`,
+`$table`, `$column`, `$tablemapping`, `$columnmapping` in the app's own database.
+It does not version, does not diff, does not code-review, and does not deploy —
+it migrates between environments only through the module's XML export/import.
+
+#### Scorecard revision
+
+| # | Abstraction | Before running | After running |
+|---|---|---|---|
+| 1 | Identity / business key | Yes | Yes — but the auto-mapper does not set it |
+| 5 | Change feed / watermark | Weak | **Absent by default** — full table scan every run; the watermark is SQL you write |
+| 6 | Delete detection | Yes, with a catch | Yes, **off by default**, and still incompatible with incremental (E8) |
+
 ### Scenarios to run (in order)
 
 1. Import `DatabaseReplication` 9.3.1 + `Mx Model Reflection` into the 11.13.0
@@ -475,9 +569,13 @@ but not simultaneously with incremental loading.
 - **OPEN-3** — *resolved*: `DatabaseReplication` 9.3.1 + `MxModelReflection`
   9.1.0 install into 11.13.0 with `mx check` reporting **0 errors** and the app
   booting HTTP 200. See E1.
-- **OPEN-5** — installing was verified; *configuring and running* a replication
-  was not. Everything in E2/E4 about mapping and sync behaviour is still
-  docs-derived, and the module's config UI has not been opened.
+- **OPEN-5** — *resolved by E9*: a replication was configured and run end to
+  end. Remaining unverified: reference mapping between two tables (orders →
+  customers), the `SQLConstraint` incremental path, and `RemoveUnsyncedObjects`
+  actually sweeping deletes.
+- **OPEN-6** — E7's commit-order gap is still untested against the module. Now
+  that we know the default query has no `WHERE` clause, the test only becomes
+  meaningful once a `SQLConstraint` watermark is configured.
 - **OPEN-4** — the domain model, security and pages are written as MDL under
   `mdl/` and pass `mxcli check`, but have **not been executed**. Nothing in the
   `.mpr` reflects them yet.
