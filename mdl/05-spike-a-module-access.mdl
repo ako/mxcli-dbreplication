@@ -1,0 +1,32 @@
+-- Spike A — make the Database Replication module reachable.
+--
+-- Installing the two marketplace modules added their module roles but wired
+-- them into NO user role, so their configuration UI is unreachable until this
+-- runs. Worth knowing: a headless `marketplace install` is not "done" when it
+-- reports success.
+
+ALTER USER ROLE Administrator ADD MODULE ROLES (
+  DatabaseReplication.Configurator,
+  MxModelReflection.ModelAdministrator
+);
+
+-- A login with a password we know, so the spike can drive the UI.
+CREATE DEMO USER 'demo_replicator' PASSWORD 'ReplicatorDemo123' (Administrator);
+
+CREATE OR REPLACE NAVIGATION Responsive
+  HOME PAGE ReplicationLab.Dashboard
+  MENU (
+    MENU ITEM 'Dashboard'         PAGE ReplicationLab.Dashboard                ICON Atlas_Core.Atlas.home;
+    MENU ITEM 'Source databases'  PAGE ReplicationLab.SourceDatabase_Overview  ICON Atlas_Core.Atlas.server;
+    MENU ITEM 'Scenarios'         PAGE ReplicationLab.Scenario_Overview        ICON Atlas_Core.Atlas."list-bullets";
+    MENU ITEM 'Findings'          PAGE ReplicationLab.Finding_Overview         ICON Atlas_Core.Atlas.checkmark;
+    MENU ITEM 'Replicated data'   PAGE ReplicationLab.ReplicatedData_Overview  ICON Atlas_Core.Atlas."data-transfer";
+    MENU 'Under test' ICON Atlas_Core.Atlas.flash (
+      MENU ITEM 'DB Replication module' PAGE DatabaseReplication.DatabaseMapping    ICON Atlas_Core.Atlas."cloud-data-transfer";
+      MENU ITEM 'Model reflection'      PAGE MxModelReflection.MxObjects_Overview   ICON Atlas_Core.Atlas.search;
+    );
+  );
+
+-- Navigation pages need explicit view rights or the app fails validation (CE0557).
+GRANT VIEW ON PAGE DatabaseReplication.DatabaseMapping  TO DatabaseReplication.Configurator;
+GRANT VIEW ON PAGE MxModelReflection.MxObjects_Overview TO MxModelReflection.ModelAdministrator;
