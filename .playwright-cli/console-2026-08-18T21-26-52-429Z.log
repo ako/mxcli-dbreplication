@@ -1,0 +1,2 @@
+[    1120ms] [ERROR] Failed to load resource: the server responded with a status of 401 (Unauthorized) @ http://localhost:8080/xas/:0
+[    1124ms] [ERROR] [Startup] Could not create a session because the server responded with 401 (Unauthorized). This may happen if the authentication token is no longer valid. The app will clear the stored session and restart. @ http://localhost:8080/dist/chunks/Dav8TUrz.js:31

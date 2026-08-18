@@ -682,6 +682,77 @@ changed rows does not.
   window exists; the adversarial test (hold a transaction open across a run) has
   not been run.
 
+### E11 — fixing the N+1 loop: measured, and it changes the conclusion
+
+`mxcli lint` flagged the v1 kernel with **CONV011** — *"has a Commit action
+inside a loop. This causes N+1 database operations."* v1 had two N+1s: a
+`RETRIEVE` per incoming row to find the existing object, and a `COMMIT` per row.
+
+v2 (`SCH_ReplicateCustomersBatch`) keeps everything else identical and changes
+only that: **one** `RETRIEVE` of the target set before the loop, a
+`CREATE LIST OF` accumulator, `FIND($Existing, CustomerId = $Row/CustomerId)`
+in memory, and **one** `COMMIT` after the loop. Both were kept so they could be
+measured against each other on identical data. Lint now reports CONV011 only
+against v1.
+
+#### Bulk load (all figures measured, not extrapolated)
+
+| Rows | DB Replication module | v2 batched kernel | v1 per-row kernel |
+|---|---|---|---|
+| 500 | **129 ms** (0.26 ms/row) | **267 ms** (0.53 ms/row) | **3 039 ms** (6.08 ms/row) |
+| 20 501 | **3 044 ms** (0.148 ms/row) | **10 070 ms** (0.491 ms/row) | **22 083 ms** (1.077 ms/row) |
+
+**Removing the N+1s bought 11.4× at 500 rows and 2.2× at 20 501.** Note the two
+figures disagree, and the larger run is the trustworthy one: v1's 500-row
+measurement carries cold-start cost (first query, connection setup, class
+loading) that amortises away over 20 000 rows — its per-row cost *falls* from
+6.08 ms to 1.08 ms as the batch grows. Quoting the 11.4× alone would overstate
+the fix.
+
+**The module is still genuinely faster at bulk**, and the gap is real, not an
+artefact: 0.148 ms/row against v2's 0.491, a **3.3×** advantage at 20 501 rows.
+Its importer does set-based work that a microflow loop cannot express. Spike A's
+original "27× faster" headline was mostly the unfixed loop; the honest number
+after the fix is **~2-3×**.
+
+#### Steady state — where it inverts
+
+| Scenario (6 changed rows) | Reads | Time |
+|---|---|---|
+| Module, 20 501-row source | **20 501 rows** (no `WHERE`) | **3 044 ms** |
+| v1 per-row kernel | 6 rows | **35-38 ms** |
+| v2 batched kernel | 6 rows | **152-361 ms** |
+
+At steady state the kernel is roughly **80-100× faster than the module**, for the
+reason established in E9: the module re-reads the entire table every single run,
+and the kernel reads only what changed. That gap widens linearly with table size
+and is what actually decides a <=10 minute SLA.
+
+#### The crossover inside the kernel
+
+v2's whole-target `RETRIEVE` is not free, and its cost scales with the **target**
+table, not the batch:
+
+| Target size | v1 per-row | v2 batched |
+|---|---|---|
+| 500 rows, 4-row increment | 24-37 ms | 22-24 ms — **tie** |
+| 20 501 rows, 6-row increment | 35-38 ms | 152-361 ms — **4-10× slower** |
+
+So neither strategy is right on its own. **A production kernel should switch on
+batch size**: batch-retrieve-and-commit for a backfill or a large catch-up,
+targeted per-row retrieves for the small incremental runs that are the steady
+state. That is a five-line decision in the same microflow, and it is the one
+piece of engineering judgement the marketplace module does not have to make —
+because it only ever does the full scan.
+
+#### Revised bottom line
+
+The performance argument for the module is narrower than Spike A suggested. It
+wins bulk loading by 2-3×, which matters for the initial backfill and for
+nothing else. It loses steady-state replication by two orders of magnitude,
+because it has no incremental mode at all. Under a <=10 minute SLA on a table of
+any size, that is the number that decides it.
+
 ### Scenarios to run (in order)
 
 1. Import `DatabaseReplication` 9.3.1 + `Mx Model Reflection` into the 11.13.0

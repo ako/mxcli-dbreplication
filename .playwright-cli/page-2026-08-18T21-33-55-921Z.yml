@@ -1,0 +1,117 @@
+- generic [ref=f2e2]:
+  - generic [ref=f2e6]:
+    - generic [ref=f2e12]:
+      - button "Toggle Menu" [ref=f2e13] [cursor=pointer]:
+        - generic [ref=f2e14]: 
+      - generic [ref=f2e16]:
+        - img [ref=f2e19]
+        - combobox "Language selector" [ref=f2e22] [cursor=pointer]:
+          - generic [ref=f2e23]: English, United States
+    - generic [ref=f2e28]:
+      - menu [ref=f2e33]:
+        - menuitem "Under test" [ref=f2e34] [cursor=pointer]:
+          - generic [ref=f2e35]: 
+          - text: Under test
+        - text:  
+      - generic [ref=f2e39]:
+        - generic [ref=f2e40]: Database Replication module vs External Database Connector — scenarios, runs and findings.
+        - button "Replicate customers now" [disabled] [active]
+        - button "Replicate customers (batched)" [ref=f2e42] [cursor=pointer]
+        - generic [ref=f2e44]:
+          - generic [ref=f2e45]:
+            - text: Scenarios
+            - generic [ref=f2e46]:
+              - grid [ref=f2e48]:
+                - rowgroup [ref=f2e49]:
+                  - row "sort Scenario sort Approach sort Status Actions Column selector" [ref=f2e50]:
+                    - columnheader "sort Scenario" [ref=f2e51]:
+                      - button "sort Scenario" [ref=f2e53] [cursor=pointer]:
+                        - generic [ref=f2e54]: Scenario
+                        - img [ref=f2e55]
+                    - columnheader "sort Approach" [ref=f2e59]:
+                      - button "sort Approach" [ref=f2e61] [cursor=pointer]:
+                        - generic [ref=f2e62]: Approach
+                        - img [ref=f2e63]
+                    - columnheader "sort Status" [ref=f2e67]:
+                      - button "sort Status" [ref=f2e69] [cursor=pointer]:
+                        - generic [ref=f2e70]: Status
+                        - img [ref=f2e71]
+                    - columnheader "Actions" [ref=f2e75]:
+                      - generic "Actions" [ref=f2e77]:
+                        - generic [ref=f2e78]: Actions
+                    - columnheader "Column selector" [ref=f2e79]:
+                      - button "Column selector" [ref=f2e81] [cursor=pointer]:
+                        - img [ref=f2e82]
+                - rowgroup
+              - generic "Pagination" [ref=f2e88]:
+                - button "Go to first page" [disabled] [ref=f2e89] [cursor=pointer]:
+                  - img [ref=f2e91]
+                - button "Go to previous page" [disabled] [ref=f2e94] [cursor=pointer]:
+                  - img [ref=f2e96]
+                - generic [ref=f2e99]: Currently showing 0 to 0 of 0
+                - generic [ref=f2e100]: 0 to 0 of 0
+                - button "Go to next page" [disabled] [ref=f2e101] [cursor=pointer]:
+                  - img [ref=f2e103]
+                - button "Go to last page" [disabled] [ref=f2e106] [cursor=pointer]:
+                  - img [ref=f2e108]
+          - generic [ref=f2e111]:
+            - text: Latest findings
+            - generic [ref=f2e112]:
+              - grid [ref=f2e114]:
+                - rowgroup [ref=f2e115]:
+                  - row "sort Finding sort Category sort Approach sort Severity Column selector" [ref=f2e116]:
+                    - columnheader "sort Finding" [ref=f2e117]:
+                      - button "sort Finding" [ref=f2e119] [cursor=pointer]:
+                        - generic [ref=f2e120]: Finding
+                        - img [ref=f2e121]
+                    - columnheader "sort Category" [ref=f2e125]:
+                      - button "sort Category" [ref=f2e127] [cursor=pointer]:
+                        - generic [ref=f2e128]: Category
+                        - img [ref=f2e129]
+                    - columnheader "sort Approach" [ref=f2e133]:
+                      - button "sort Approach" [ref=f2e135] [cursor=pointer]:
+                        - generic [ref=f2e136]: Approach
+                        - img [ref=f2e137]
+                    - columnheader "sort Severity" [ref=f2e141]:
+                      - button "sort Severity" [ref=f2e143] [cursor=pointer]:
+                        - generic [ref=f2e144]: Severity
+                        - img [ref=f2e145]
+                    - columnheader "Column selector" [ref=f2e147]:
+                      - button "Column selector" [ref=f2e149] [cursor=pointer]:
+                        - img [ref=f2e150]
+                - rowgroup
+              - generic "Pagination" [ref=f2e156]:
+                - button "Go to first page" [disabled] [ref=f2e157] [cursor=pointer]:
+                  - img [ref=f2e159]
+                - button "Go to previous page" [disabled] [ref=f2e162] [cursor=pointer]:
+                  - img [ref=f2e164]
+                - generic [ref=f2e167]: Currently showing 0 to 0 of 0
+                - generic [ref=f2e168]: 0 to 0 of 0
+                - button "Go to next page" [disabled] [ref=f2e169] [cursor=pointer]:
+                  - img [ref=f2e171]
+                - button "Go to last page" [disabled] [ref=f2e174] [cursor=pointer]:
+                  - img [ref=f2e176]
+  - generic [ref=f2e181]:
+    - heading "Select user" [level=2] [ref=f2e182]
+    - paragraph [ref=f2e183]: Select one of the demo users to view the application with the associated user roles.
+    - list [ref=f2e184]:
+      - listitem [ref=f2e185] [cursor=pointer]:
+        - generic [ref=f2e186]:
+          - heading "demo_administrator" [level=3] [ref=f2e187]
+          - paragraph [ref=f2e188]: Administrator
+      - listitem [ref=f2e189] [cursor=pointer]:
+        - generic [ref=f2e190]:
+          - heading "demo_user" [level=3] [ref=f2e191]
+          - paragraph [ref=f2e192]: User
+      - listitem [ref=f2e193] [cursor=pointer]:
+        - generic [ref=f2e194]:
+          - heading "demo_evaluator" [level=3] [ref=f2e195]
+          - paragraph [ref=f2e196]: Evaluator
+      - listitem [ref=f2e197] [cursor=pointer]:
+        - generic [ref=f2e198]:
+          - heading "demo_viewer" [level=3] [ref=f2e199]
+          - paragraph [ref=f2e200]: Viewer
+      - listitem [ref=f2e201] [cursor=pointer]:
+        - generic [ref=f2e202]:
+          - heading "demo_replicator" [level=3] [ref=f2e203]
+          - paragraph [ref=f2e204]: Administrator

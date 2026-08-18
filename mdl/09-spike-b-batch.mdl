@@ -1,0 +1,98 @@
+-- ============================================================================
+-- SPIKE B (v2) — the same kernel with the N+1s removed
+-- ============================================================================
+-- Kept alongside SCH_ReplicateCustomers rather than replacing it, so the two
+-- can be measured against each other on identical data.
+--
+-- Two N+1s in v1, both flagged by `mxcli lint` as CONV011:
+--   1. one RETRIEVE per incoming row, to find the existing object
+--   2. one COMMIT per incoming row
+-- v2 retrieves the target set ONCE and commits ONCE.
+
+/**
+ * Replicate customers changed since the cursor watermark — batched.
+ *
+ * Trade-off worth measuring rather than assuming: retrieving the whole target
+ * set up front is a clear win when the batch is large, but on a two-row
+ * incremental it reads far more than the two targeted retrieves it replaces.
+ * The honest kernel would switch strategy on batch size; this version always
+ * batches so the difference can be measured.
+ */
+CREATE OR MODIFY MICROFLOW ReplicationLab.SCH_ReplicateCustomersBatch ()
+BEGIN
+  DECLARE $RowsRead Long = 0;
+  DECLARE $RowsUpserted Long = 0;
+  DECLARE $StartedAt DateTime = [%CurrentDateTime%];
+
+  $Cursor = CALL MICROFLOW ReplicationLab.ACT_GetOrCreateCursor (SetName = 'customers');
+
+  DECLARE $From DateTime = addSeconds($Cursor/Watermark, -$Cursor/OverlapSeconds);
+  DECLARE $To DateTime = addSeconds([%CurrentDateTime%], -$Cursor/SettleSeconds);
+
+  $Rows = EXECUTE DATABASE QUERY ReplicationLab.SourceDb.GetCustomersChangedSince (
+    fromTs = $From,
+    toTs = $To
+  );
+
+  -- One retrieve for the whole target set, instead of one per row.
+  RETRIEVE $Existing FROM ReplicationLab.ConnectorCustomer;
+
+  -- One commit for everything touched, instead of one per row.
+  $ToCommit = CREATE LIST OF ReplicationLab.ConnectorCustomer;
+
+  LOOP $Row IN $Rows BEGIN
+    SET $RowsRead = $RowsRead + 1;
+
+    $Match = FIND($Existing, CustomerId = $Row/CustomerId);
+
+    IF $Match = empty THEN
+      $Created = CREATE ReplicationLab.ConnectorCustomer (
+        CustomerId = $Row/CustomerId,
+        FullName = $Row/FullName,
+        Email = $Row/Email,
+        City = $Row/City,
+        SourceUpdatedAt = $Row/SourceUpdatedAt,
+        ImportedAt = [%CurrentDateTime%]
+      );
+      ADD $Created TO $ToCommit;
+    ELSE
+      CHANGE $Match (
+        FullName = $Row/FullName,
+        Email = $Row/Email,
+        City = $Row/City,
+        SourceUpdatedAt = $Row/SourceUpdatedAt,
+        ImportedAt = [%CurrentDateTime%]
+      );
+      ADD $Match TO $ToCommit;
+    END IF;
+
+    SET $RowsUpserted = $RowsUpserted + 1;
+  END LOOP;
+
+  COMMIT $ToCommit;
+
+  CHANGE $Cursor (
+    Watermark = $To,
+    LastRunStartedAt = $StartedAt,
+    LastRunFinishedAt = [%CurrentDateTime%],
+    LastRunRowsRead = $RowsRead,
+    LastRunRowsUpserted = $RowsUpserted,
+    LagSeconds = secondsBetween($To, [%CurrentDateTime%])
+  );
+  COMMIT $Cursor;
+
+  LOG INFO NODE 'SpikeB' 'Replicated customers (batched)';
+END;
+/
+
+GRANT EXECUTE ON MICROFLOW ReplicationLab.SCH_ReplicateCustomersBatch TO ReplicationLab.Administrator;
+
+ALTER PAGE ReplicationLab.Dashboard {
+  INSERT AFTER btnReplicateNow {
+    ACTIONBUTTON btnReplicateBatch (
+      Caption: 'Replicate customers (batched)',
+      ButtonStyle: Success,
+      Action: MICROFLOW ReplicationLab.SCH_ReplicateCustomersBatch
+    )
+  }
+};
