@@ -1,0 +1,176 @@
+-- ReplicationLab — domain model
+-- Purpose: record, run and compare replication scenarios so the evaluation of
+-- the Database Replication module vs the External Database Connector is
+-- assembled from recorded evidence rather than memory.
+
+CREATE MODULE ReplicationLab;
+
+-- ── Enumerations ──────────────────────────────────────────────────────────────
+
+-- The two things under evaluation. Every scenario and every finding is tagged
+-- with one, which is what makes the final comparison a query instead of an essay.
+CREATE ENUMERATION ReplicationLab.Approach (
+  DatabaseReplication 'Database Replication module',
+  ExternalDbConnector 'External Database Connector',
+  Both                'Both / comparison'
+);
+
+CREATE ENUMERATION ReplicationLab.DbEngine (
+  PostgreSQL 'PostgreSQL',
+  MSSQL      'Microsoft SQL Server',
+  MySQL      'MySQL',
+  Oracle     'Oracle',
+  Snowflake  'Snowflake',
+  Other      'Other (JDBC)'
+);
+
+CREATE ENUMERATION ReplicationLab.ScenarioStatus (
+  Draft    'Draft',
+  Ready    'Ready to run',
+  Running  'Running',
+  Passed   'Passed',
+  Failed   'Failed',
+  Blocked  'Blocked'
+);
+
+CREATE ENUMERATION ReplicationLab.RunOutcome (
+  Success        'Success',
+  PartialSuccess 'Partial success',
+  Failure        'Failure',
+  Error          'Error'
+);
+
+CREATE ENUMERATION ReplicationLab.FindingCategory (
+  Strength   'Strength',
+  Weakness   'Weakness',
+  Limitation 'Hard limitation',
+  Workaround 'Workaround',
+  Question   'Open question'
+);
+
+CREATE ENUMERATION ReplicationLab.Severity (
+  Info    'Info',
+  Low     'Low',
+  Medium  'Medium',
+  High    'High',
+  Blocker 'Blocker'
+);
+
+-- ── Entities ──────────────────────────────────────────────────────────────────
+
+-- An external database under test. JdbcUrl/Username are here for the record of
+-- what was tested; the actual credentials live in constants, never in data.
+CREATE PERSISTENT ENTITY ReplicationLab.SourceDatabase (
+  Name: String(100) NOT NULL UNIQUE ERROR 'A source database with this name already exists',
+  Engine: Enumeration(ReplicationLab.DbEngine),
+  DatabaseName: String(100),
+  JdbcUrl: String(500),
+  Username: String(100),
+  IsReachable: Boolean DEFAULT false,
+  LastCheckedAt: DateTime,
+  Notes: String
+)
+INDEX (Name)
+COMMENT 'An external database used as a replication source during evaluation.';
+
+-- A table we point a replication or a query at. RowCountEstimate is what makes
+-- "how does it behave at volume" answerable.
+CREATE PERSISTENT ENTITY ReplicationLab.SourceTable (
+  SchemaName: String(100),
+  TableName: String(200) NOT NULL,
+  RowCountEstimate: Long,
+  HasPrimaryKey: Boolean DEFAULT true,
+  Notes: String
+)
+COMMENT 'A table in a SourceDatabase that a scenario reads from.';
+
+-- One thing being tested, tagged with the approach it exercises.
+CREATE PERSISTENT ENTITY ReplicationLab.EvaluationScenario (
+  Name: String(200) NOT NULL,
+  Goal: String,
+  Approach: Enumeration(ReplicationLab.Approach),
+  Status: Enumeration(ReplicationLab.ScenarioStatus),
+  Steps: String,
+  CreatedDate: AutoCreatedDate,
+  ChangedDate: AutoChangedDate
+)
+COMMENT 'One replication/query scenario under evaluation (full load, incremental, joins, schema drift, ...).';
+
+-- One execution of a scenario. This is where "is it fast enough" gets a number.
+CREATE PERSISTENT ENTITY ReplicationLab.ScenarioRun (
+  StartedAt: DateTime,
+  FinishedAt: DateTime,
+  DurationMs: Long,
+  RowsProcessed: Long,
+  Outcome: Enumeration(ReplicationLab.RunOutcome),
+  LogOutput: String
+)
+COMMENT 'A single execution of an EvaluationScenario, with timings and row counts.';
+
+-- The actual deliverable of this repo.
+CREATE PERSISTENT ENTITY ReplicationLab.Finding (
+  Title: String(200) NOT NULL,
+  Category: Enumeration(ReplicationLab.FindingCategory),
+  Approach: Enumeration(ReplicationLab.Approach),
+  Severity: Enumeration(ReplicationLab.Severity),
+  Detail: String,
+  Evidence: String,
+  RecordedOn: DateTime
+)
+COMMENT 'A recorded strength, weakness, limitation or workaround, tied to an approach.';
+
+-- ── Replication targets ───────────────────────────────────────────────────────
+-- Real entities to replicate *into*, so scenarios move actual rows instead of
+-- being theoretical. Mirrors a small demo schema in the source database.
+
+CREATE PERSISTENT ENTITY ReplicationLab.DemoCustomer (
+  CustomerId: Integer NOT NULL,
+  FullName: String(200),
+  Email: String(200),
+  City: String(100),
+  SourceUpdatedAt: DateTime,
+  ImportedAt: DateTime
+)
+INDEX (CustomerId)
+COMMENT 'Replication target mirroring the demo customers table in the source database.';
+
+CREATE PERSISTENT ENTITY ReplicationLab.DemoOrder (
+  OrderId: Integer NOT NULL,
+  OrderNumber: String(50),
+  OrderDate: DateTime,
+  Amount: Decimal,
+  Status: String(50),
+  SourceUpdatedAt: DateTime,
+  ImportedAt: DateTime
+)
+INDEX (OrderId)
+COMMENT 'Replication target mirroring the demo orders table; exercises reference mapping.';
+
+-- ── Associations ──────────────────────────────────────────────────────────────
+
+CREATE ASSOCIATION ReplicationLab.SourceTable_SourceDatabase
+  FROM ReplicationLab.SourceTable TO ReplicationLab.SourceDatabase
+  TYPE Reference OWNER Default DELETE_BEHAVIOR CASCADE;
+
+CREATE ASSOCIATION ReplicationLab.EvaluationScenario_SourceDatabase
+  FROM ReplicationLab.EvaluationScenario TO ReplicationLab.SourceDatabase
+  TYPE Reference OWNER Default DELETE_BEHAVIOR PREVENT;
+
+-- A scenario may read several tables; a table may feature in several scenarios.
+CREATE ASSOCIATION ReplicationLab.EvaluationScenario_SourceTable
+  FROM ReplicationLab.EvaluationScenario TO ReplicationLab.SourceTable
+  TYPE ReferenceSet OWNER Both;
+
+CREATE ASSOCIATION ReplicationLab.ScenarioRun_EvaluationScenario
+  FROM ReplicationLab.ScenarioRun TO ReplicationLab.EvaluationScenario
+  TYPE Reference OWNER Default DELETE_BEHAVIOR CASCADE;
+
+-- Nullable on purpose: a finding can be general ("the module needs Mx Model
+-- Reflection at all") and not belong to any one scenario.
+CREATE ASSOCIATION ReplicationLab.Finding_EvaluationScenario
+  FROM ReplicationLab.Finding TO ReplicationLab.EvaluationScenario
+  TYPE Reference OWNER Default DELETE_BEHAVIOR DELETE_BUT_KEEP_REFERENCES;
+
+CREATE ASSOCIATION ReplicationLab.DemoOrder_DemoCustomer
+  FROM ReplicationLab.DemoOrder TO ReplicationLab.DemoCustomer
+  TYPE Reference OWNER Default DELETE_BEHAVIOR CASCADE;

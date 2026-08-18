@@ -1,0 +1,271 @@
+-- ReplicationLab — pages
+-- Six pages: enough to enter what is being tested, run it, and read the answer.
+-- The Findings overview is the one that matters — it is the evaluation output.
+--
+-- Ordering is load-bearing: the MDL executor resolves page references in
+-- statement order, so every page that is *linked to* is created before the page
+-- that links to it (MDL-PAGE01).
+
+-- ── Source databases ──────────────────────────────────────────────────────────
+
+CREATE PAGE ReplicationLab.SourceDatabase_Edit
+  (
+    Title: 'Source database',
+    Layout: Atlas_Core.PopupLayout,
+    Params: { $SourceDatabase: ReplicationLab.SourceDatabase },
+    Folder: 'SourceDatabases'
+  )
+  {
+    LAYOUTGRID lgSourceDatabase {
+      ROW rowSourceDatabase {
+        COLUMN colSourceDatabase (DesktopWidth: autofill) {
+          DATAVIEW dvSourceDatabase (DataSource: $SourceDatabase) {
+            TEXTBOX    txtSdName     (Label: 'Name',         Attribute: Name)
+            COMBOBOX   cbSdEngine    (Label: 'Engine',       Attribute: Engine)
+            TEXTBOX    txtSdDatabase (Label: 'Database',     Attribute: DatabaseName)
+            TEXTBOX    txtSdJdbcUrl  (Label: 'JDBC URL',     Attribute: JdbcUrl)
+            TEXTBOX    txtSdUsername (Label: 'Username',     Attribute: Username)
+            CHECKBOX   chkSdReach    (Label: 'Reachable',    Attribute: IsReachable)
+            DATEPICKER dpSdChecked   (Label: 'Last checked', Attribute: LastCheckedAt)
+            TEXTAREA   taSdNotes     (Label: 'Notes',        Attribute: Notes)
+            DATAGRID gridSdTables (DataSource: $currentObject/ReplicationLab.SourceTable_SourceDatabase) {
+              COLUMN colStSchema (Attribute: SchemaName,       Caption: 'Schema')
+              COLUMN colStTable  (Attribute: TableName,        Caption: 'Table')
+              COLUMN colStRows   (Attribute: RowCountEstimate, Caption: 'Rows (est.)')
+              COLUMN colStPk     (Attribute: HasPrimaryKey,    Caption: 'Has PK')
+            }
+            FOOTER ftSourceDatabase {
+              ACTIONBUTTON btnSdSave   (Caption: 'Save',   Action: SAVE_CHANGES CLOSE_PAGE, ButtonStyle: Primary)
+              ACTIONBUTTON btnSdCancel (Caption: 'Cancel', Action: CANCEL_CHANGES CLOSE_PAGE)
+            }
+          }
+        }
+      }
+    }
+  };
+
+CREATE PAGE ReplicationLab.SourceDatabase_Overview
+  (
+    Title: 'Source databases',
+    Layout: Atlas_Core.Atlas_Default,
+    Url: 'source-databases',
+    Folder: 'SourceDatabases'
+  )
+  {
+    DATAGRID gridSourceDatabases (DataSource: DATABASE ReplicationLab.SourceDatabase) {
+      COLUMN colSdName     (Attribute: Name,          Caption: 'Name')
+      COLUMN colSdEngine   (Attribute: Engine,        Caption: 'Engine')
+      COLUMN colSdDatabase (Attribute: DatabaseName,  Caption: 'Database')
+      COLUMN colSdReach    (Attribute: IsReachable,   Caption: 'Reachable')
+      COLUMN colSdChecked  (Attribute: LastCheckedAt, Caption: 'Last checked')
+      -- Row-scoped: a control bar has no current row, so the edit button lives
+      -- in a column instead (MDL-BUTTON01 / CE1571).
+      COLUMN colSdActions (Caption: 'Actions') {
+        ACTIONBUTTON btnSdEdit (Caption: 'Edit',
+          Action: SHOW_PAGE ReplicationLab.SourceDatabase_Edit(SourceDatabase: $currentObject))
+      }
+      CONTROLBAR cbSourceDatabases {
+        ACTIONBUTTON btnSdNew (Caption: 'New', ButtonStyle: Primary,
+          Action: CREATE_OBJECT ReplicationLab.SourceDatabase THEN SHOW_PAGE ReplicationLab.SourceDatabase_Edit)
+      }
+    }
+  };
+
+-- ── Scenarios ─────────────────────────────────────────────────────────────────
+
+-- The working page: what is being tested, every run of it, and what it taught us.
+CREATE PAGE ReplicationLab.Scenario_Detail
+  (
+    Title: 'Scenario',
+    Layout: Atlas_Core.Atlas_Default,
+    Params: { $Scenario: ReplicationLab.EvaluationScenario },
+    Url: 'scenario',
+    Folder: 'Scenarios'
+  )
+  {
+    LAYOUTGRID lgScenario {
+      ROW rowScenario {
+        COLUMN colScenario (DesktopWidth: autofill) {
+          DATAVIEW dvScenario (DataSource: $Scenario) {
+            TEXTBOX  txtScName    (Label: 'Name',     Attribute: Name)
+            COMBOBOX cbScApproach (Label: 'Approach', Attribute: Approach)
+            COMBOBOX cbScStatus   (Label: 'Status',   Attribute: Status)
+            TEXTAREA taScGoal     (Label: 'Goal',     Attribute: Goal)
+            TEXTAREA taScSteps    (Label: 'Steps',    Attribute: Steps)
+            DATAVIEW dvScSource (DataSource: $currentObject/ReplicationLab.EvaluationScenario_SourceDatabase) {
+              TEXTBOX txtScSourceName (Label: 'Source database', Attribute: Name)
+            }
+            DATAGRID gridScRuns (DataSource: $currentObject/ReplicationLab.ScenarioRun_EvaluationScenario) {
+              COLUMN colRunStarted  (Attribute: StartedAt,     Caption: 'Started')
+              COLUMN colRunDuration (Attribute: DurationMs,    Caption: 'Duration (ms)', Alignment: right)
+              COLUMN colRunRows     (Attribute: RowsProcessed, Caption: 'Rows',          Alignment: right)
+              COLUMN colRunOutcome  (Attribute: Outcome,       Caption: 'Outcome')
+            }
+            DATAGRID gridScFindings (DataSource: $currentObject/ReplicationLab.Finding_EvaluationScenario) {
+              COLUMN colScFdTitle    (Attribute: Title,    Caption: 'Finding')
+              COLUMN colScFdCategory (Attribute: Category, Caption: 'Category')
+              COLUMN colScFdSeverity (Attribute: Severity, Caption: 'Severity')
+            }
+            FOOTER ftScenario {
+              ACTIONBUTTON btnScSave   (Caption: 'Save',   Action: SAVE_CHANGES, ButtonStyle: Primary)
+              ACTIONBUTTON btnScCancel (Caption: 'Cancel', Action: CANCEL_CHANGES)
+            }
+          }
+        }
+      }
+    }
+  };
+
+CREATE PAGE ReplicationLab.Scenario_Overview
+  (
+    Title: 'Scenarios',
+    Layout: Atlas_Core.Atlas_Default,
+    Url: 'scenarios',
+    Folder: 'Scenarios'
+  )
+  {
+    DATAGRID gridScenarioOverview (DataSource: DATABASE ReplicationLab.EvaluationScenario) {
+      COLUMN colSoName     (Attribute: Name,     Caption: 'Scenario')
+      COLUMN colSoApproach (Attribute: Approach, Caption: 'Approach')
+      COLUMN colSoStatus   (Attribute: Status,   Caption: 'Status')
+      COLUMN colSoActions (Caption: 'Actions') {
+        ACTIONBUTTON btnScOpen (Caption: 'Open',
+          Action: SHOW_PAGE ReplicationLab.Scenario_Detail(Scenario: $currentObject))
+      }
+      CONTROLBAR cbScenarios {
+        ACTIONBUTTON btnScNew (Caption: 'New', ButtonStyle: Primary,
+          Action: CREATE_OBJECT ReplicationLab.EvaluationScenario THEN SHOW_PAGE ReplicationLab.Scenario_Detail)
+      }
+    }
+  };
+
+-- ── Findings — the evaluation output ─────────────────────────────────────────
+
+CREATE PAGE ReplicationLab.Finding_Edit
+  (
+    Title: 'Finding',
+    Layout: Atlas_Core.PopupLayout,
+    Params: { $Finding: ReplicationLab.Finding },
+    Folder: 'Findings'
+  )
+  {
+    LAYOUTGRID lgFinding {
+      ROW rowFinding {
+        COLUMN colFinding (DesktopWidth: autofill) {
+          DATAVIEW dvFinding (DataSource: $Finding) {
+            TEXTBOX    txtFdTitle   (Label: 'Title',    Attribute: Title)
+            COMBOBOX   cbFdApproach (Label: 'Approach', Attribute: Approach)
+            COMBOBOX   cbFdCategory (Label: 'Category', Attribute: Category)
+            COMBOBOX   cbFdSeverity (Label: 'Severity', Attribute: Severity)
+            DATEPICKER dpFdRecorded (Label: 'Recorded', Attribute: RecordedOn)
+            TEXTAREA   taFdDetail   (Label: 'Detail',   Attribute: Detail)
+            TEXTAREA   taFdEvidence (Label: 'Evidence', Attribute: Evidence)
+            FOOTER ftFinding {
+              ACTIONBUTTON btnFdSave   (Caption: 'Save',   Action: SAVE_CHANGES CLOSE_PAGE, ButtonStyle: Primary)
+              ACTIONBUTTON btnFdCancel (Caption: 'Cancel', Action: CANCEL_CHANGES CLOSE_PAGE)
+            }
+          }
+        }
+      }
+    }
+  };
+
+CREATE PAGE ReplicationLab.Finding_Overview
+  (
+    Title: 'Findings',
+    Layout: Atlas_Core.Atlas_Default,
+    Url: 'findings',
+    Folder: 'Findings'
+  )
+  {
+    DYNAMICTEXT dtFindingsIntro (Content: 'Strengths, weaknesses and limitations recorded per approach. This is the evaluation.')
+    DATAGRID gridFindings (DataSource: DATABASE ReplicationLab.Finding) {
+      COLUMN colFoTitle    (Attribute: Title,      Caption: 'Finding')
+      COLUMN colFoApproach (Attribute: Approach,   Caption: 'Approach')
+      COLUMN colFoCategory (Attribute: Category,   Caption: 'Category')
+      COLUMN colFoSeverity (Attribute: Severity,   Caption: 'Severity')
+      COLUMN colFoRecorded (Attribute: RecordedOn, Caption: 'Recorded')
+      COLUMN colFoActions (Caption: 'Actions') {
+        ACTIONBUTTON btnFdEdit (Caption: 'Edit',
+          Action: SHOW_PAGE ReplicationLab.Finding_Edit(Finding: $currentObject))
+      }
+      CONTROLBAR cbFindings {
+        ACTIONBUTTON btnFdNew (Caption: 'New', ButtonStyle: Primary,
+          Action: CREATE_OBJECT ReplicationLab.Finding THEN SHOW_PAGE ReplicationLab.Finding_Edit)
+      }
+    }
+  };
+
+-- ── Replicated data — proof that rows actually moved ─────────────────────────
+
+CREATE PAGE ReplicationLab.ReplicatedData_Overview
+  (
+    Title: 'Replicated data',
+    Layout: Atlas_Core.Atlas_Default,
+    Url: 'replicated-data',
+    Folder: 'ReplicatedData'
+  )
+  {
+    LAYOUTGRID lgReplicated {
+      ROW rowReplicated {
+        COLUMN colCustomers (DesktopWidth: 6) {
+          DYNAMICTEXT dtCustomers (Content: 'Customers')
+          DATAGRID gridDemoCustomers (DataSource: DATABASE ReplicationLab.DemoCustomer) {
+            COLUMN colDcId       (Attribute: CustomerId,      Caption: 'Id', Alignment: right)
+            COLUMN colDcName     (Attribute: FullName,        Caption: 'Name')
+            COLUMN colDcCity     (Attribute: City,            Caption: 'City')
+            COLUMN colDcUpdated  (Attribute: SourceUpdatedAt, Caption: 'Source updated')
+            COLUMN colDcImported (Attribute: ImportedAt,      Caption: 'Imported')
+          }
+        }
+        COLUMN colOrders (DesktopWidth: 6) {
+          DYNAMICTEXT dtOrders (Content: 'Orders')
+          DATAGRID gridDemoOrders (DataSource: DATABASE ReplicationLab.DemoOrder) {
+            COLUMN colDoNumber (Attribute: OrderNumber, Caption: 'Order')
+            COLUMN colDoDate   (Attribute: OrderDate,   Caption: 'Date')
+            COLUMN colDoAmount (Attribute: Amount,      Caption: 'Amount', Alignment: right)
+            COLUMN colDoStatus (Attribute: Status,      Caption: 'Status')
+          }
+        }
+      }
+    }
+  };
+
+-- ── Dashboard (home) ─────────────────────────────────────────────────────────
+-- Created last: it links to the pages above.
+
+CREATE PAGE ReplicationLab.Dashboard
+  (
+    Title: 'Replication evaluation',
+    Layout: Atlas_Core.Atlas_Default,
+    Url: 'dashboard',
+    Folder: 'Dashboard'
+  )
+  {
+    DYNAMICTEXT dtIntro (Content: 'Database Replication module vs External Database Connector — scenarios, runs and findings.')
+    LAYOUTGRID lgDashboard {
+      ROW rowTop {
+        COLUMN colScenarios (DesktopWidth: 6) {
+          DYNAMICTEXT dtScenarios (Content: 'Scenarios')
+          DATAGRID gridScenarios (DataSource: DATABASE ReplicationLab.EvaluationScenario) {
+            COLUMN colScName     (Attribute: Name,     Caption: 'Scenario')
+            COLUMN colScApproach (Attribute: Approach, Caption: 'Approach')
+            COLUMN colScStatus   (Attribute: Status,   Caption: 'Status')
+            COLUMN colScActions (Caption: 'Actions') {
+              ACTIONBUTTON btnDashOpenScenario (Caption: 'Open',
+                Action: SHOW_PAGE ReplicationLab.Scenario_Detail(Scenario: $currentObject))
+            }
+          }
+        }
+        COLUMN colFindings (DesktopWidth: 6) {
+          DYNAMICTEXT dtFindings (Content: 'Latest findings')
+          DATAGRID gridLatestFindings (DataSource: DATABASE ReplicationLab.Finding) {
+            COLUMN colFdTitle    (Attribute: Title,    Caption: 'Finding')
+            COLUMN colFdCategory (Attribute: Category, Caption: 'Category')
+            COLUMN colFdApproach (Attribute: Approach, Caption: 'Approach')
+            COLUMN colFdSeverity (Attribute: Severity, Caption: 'Severity')
+          }
+        }
+      }
+    }
+  };

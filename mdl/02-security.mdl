@@ -1,0 +1,42 @@
+-- ReplicationLab — security
+-- Three roles. The split that matters: an Evaluator may run scenarios and
+-- record findings but may NOT touch connection settings, and a Viewer never
+-- sees the JDBC URL or username of a source database.
+
+CREATE OR MODIFY MODULE ROLE ReplicationLab.Administrator DESCRIPTION 'Full access; owns source databases and connection settings';
+CREATE OR MODIFY MODULE ROLE ReplicationLab.Evaluator     DESCRIPTION 'Creates and runs scenarios, records findings; cannot change connection settings';
+CREATE OR MODIFY MODULE ROLE ReplicationLab.Viewer        DESCRIPTION 'Read-only access to scenarios, runs and findings';
+
+CREATE USER ROLE Administrator (ReplicationLab.Administrator) MANAGE ALL ROLES;
+CREATE USER ROLE Evaluator     (ReplicationLab.Evaluator);
+CREATE USER ROLE Viewer        (ReplicationLab.Viewer);
+
+-- ── Administrator: everything ────────────────────────────────────────────────
+GRANT ReplicationLab.Administrator ON ReplicationLab.SourceDatabase     (CREATE, DELETE, READ *, WRITE *);
+GRANT ReplicationLab.Administrator ON ReplicationLab.SourceTable        (CREATE, DELETE, READ *, WRITE *);
+GRANT ReplicationLab.Administrator ON ReplicationLab.EvaluationScenario (CREATE, DELETE, READ *, WRITE *);
+GRANT ReplicationLab.Administrator ON ReplicationLab.ScenarioRun        (CREATE, DELETE, READ *, WRITE *);
+GRANT ReplicationLab.Administrator ON ReplicationLab.Finding            (CREATE, DELETE, READ *, WRITE *);
+GRANT ReplicationLab.Administrator ON ReplicationLab.DemoCustomer       (CREATE, DELETE, READ *, WRITE *);
+GRANT ReplicationLab.Administrator ON ReplicationLab.DemoOrder          (CREATE, DELETE, READ *, WRITE *);
+
+-- ── Evaluator: runs the evaluation, but connection settings are read-only ────
+GRANT ReplicationLab.Evaluator ON ReplicationLab.SourceDatabase     (READ *);
+GRANT ReplicationLab.Evaluator ON ReplicationLab.SourceTable        (CREATE, DELETE, READ *, WRITE *);
+GRANT ReplicationLab.Evaluator ON ReplicationLab.EvaluationScenario (CREATE, DELETE, READ *, WRITE *);
+GRANT ReplicationLab.Evaluator ON ReplicationLab.ScenarioRun        (CREATE, DELETE, READ *, WRITE *);
+GRANT ReplicationLab.Evaluator ON ReplicationLab.Finding            (CREATE, DELETE, READ *, WRITE *);
+-- The replication targets are written by the replication run, not by hand.
+GRANT ReplicationLab.Evaluator ON ReplicationLab.DemoCustomer       (READ *);
+GRANT ReplicationLab.Evaluator ON ReplicationLab.DemoOrder          (READ *);
+
+-- ── Viewer: read-only, and no credentials ────────────────────────────────────
+-- Named attributes rather than READ *: JdbcUrl and Username are deliberately
+-- withheld, so the overview page is safe to show to anyone.
+GRANT ReplicationLab.Viewer ON ReplicationLab.SourceDatabase     (READ (Name, Engine, DatabaseName, IsReachable, LastCheckedAt, Notes));
+GRANT ReplicationLab.Viewer ON ReplicationLab.SourceTable        (READ *);
+GRANT ReplicationLab.Viewer ON ReplicationLab.EvaluationScenario (READ *);
+GRANT ReplicationLab.Viewer ON ReplicationLab.ScenarioRun        (READ *);
+GRANT ReplicationLab.Viewer ON ReplicationLab.Finding            (READ *);
+GRANT ReplicationLab.Viewer ON ReplicationLab.DemoCustomer       (READ *);
+GRANT ReplicationLab.Viewer ON ReplicationLab.DemoOrder          (READ *);
