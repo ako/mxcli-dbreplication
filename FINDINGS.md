@@ -133,6 +133,26 @@ module is packaged as `DatabaseReplication` and is found by searching
 `replication`. Results come from a cached catalog — pass `--refresh` when the
 answer matters.
 
+### F8 — the hub preview works and is GitHub-gated
+
+`mxcli run --hub https://hub.mxcli.org -p ReplicationLab.mpr` registered and
+printed:
+
+```
+Tunnel: exposing local :8080 at https://replicationlab-claude-mendix-app-provisioning-mv4c1x.mxcli.org (via proxy)
+```
+
+The hostname is derived from the app name plus the git branch. Reaching it with
+`curl` returns **302 → GitHub OAuth → 403**: the hub puts previews behind a
+GitHub login, so an unauthenticated client cannot fetch them. That is the
+expected behaviour, not a failure — a browser session authenticates and gets
+through. Use the local URL for scripted checks; `curl` against the hub URL will
+never return 200.
+
+**Verified:** `curl -o /dev/null -w %{http_code} http://localhost:8080/` → `200`;
+the same against the hub host → `302`, following redirects → GitHub's
+`/login/oauth/authorize`.
+
 ---
 
 ## Evaluation findings (Database Replication vs External Database Connector)
