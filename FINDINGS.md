@@ -538,7 +538,7 @@ own web UI, driven with Playwright.
 | Step | Result |
 |---|---|
 | Connect to PostgreSQL | Worked with **no extra JDBC driver** — the Mendix runtime already ships one. (Oracle/DB2/Informix would still need their own; see E4.) |
-| Credential storage | **Encrypted at rest**: `databasepassword_encrypted` holds `AES/GCM/NoPadding;…`, and the plaintext column holds the literal placeholder `ThisIsConvertedToAnEncryptedPass`. A genuine strength. |
+| Credential storage | **Encrypted at rest**: `databasepassword_encrypted` holds `AES/GCM/NoPadding;…`, and the plaintext column holds the literal placeholder `ThisIsConvertedToAnEncryptedPass`. **Qualified by E13** — the AES key is a module constant shipped with a public default. |
 | Schema sync | Read both tables and all 12 columns with correct types (`int4`, `varchar`, `timestamp`, `numeric`) by querying `pg_class`/`pg_attribute`/`pg_namespace`. |
 | Import 500 rows | **129 ms** end to end (`18:53:39.451` → `18:53:39.580`). Performance is not the problem. |
 | Idempotency | Re-running did **not** duplicate: 500 rows stayed 500 (+1 for a new source row). Key matching on `customer_id` works exactly as advertised. |
@@ -752,6 +752,109 @@ wins bulk loading by 2-3×, which matters for the initial backfill and for
 nothing else. It loses steady-state replication by two orders of magnitude,
 because it has no incremental mode at all. Under a <=10 minute SLA on a table of
 any size, that is the number that decides it.
+
+### E12 — how the module batches (from its jar and its own log)
+
+`userlib/replication-1.0.6.jar` → `ReplicationSettings$Configuration` carries four
+public tunables, with these compiled-in defaults:
+
+| Field | Default | Role |
+|---|---|---|
+| `MetaInfoProcessingBatchThreshold` | **1000** | rows accumulated before a batch is processed and committed |
+| `RetrieveOQL_Limit` | **1000** | max existing Mendix objects fetched per OQL lookup |
+| `RetrieveById_Limit` | **200** | max objects fetched per by-id lookup |
+| `RetrieveToBeRemovedObjectsXPath_Limit` | **200** | page size for the mark-and-sweep delete pass |
+
+`calculateOQLRetrieveLimit(keySize)` shrinks the OQL limit against a ceiling of
+**1680** when the business key spans several columns — each keyed object costs
+`keySize` conditions in the generated `WHERE`, so the limit is reduced to stay
+under a query-size ceiling. It logs `Changing the retrieve limit to: …`.
+
+**The architecture, confirmed against the runtime log.** For the 20 501-row
+import the log emits **21** statistics blocks with `Created:` stepping
+500 → 1500 → 2500 …, i.e. increments of exactly 1000. So the module:
+
+1. streams the JDBC `ResultSet` rather than materialising it;
+2. accumulates 1000 rows as `MetaInfoObject`s;
+3. issues **one OQL query per batch** to fetch the existing Mendix objects
+   matching *that batch's keys* — not one query per row, and not the whole table;
+4. matches in memory (`changeMembersForBatch`), commits the batch, repeats.
+
+That is precisely why it costs **0.148 ms/row** and stays flat as the table
+grows: per batch it does one source read, one keyed lookup, one commit. It is
+the design my v2 approximates badly by retrieving the *entire* target set, which
+is why v2 degrades on a large target (E11).
+
+The delete sweep is batched too, on its own smaller page size, with the log line
+`Start retrieving next batch, total removed: …`.
+
+### E13 — CORRECTION: the encrypted password uses a shipped default key
+
+E9 recorded credential encryption as a genuine strength. That needs qualifying.
+
+`javasource/databasereplication/implementation/ObjectBaseDBSettings.java`:
+
+```java
+private static SecretKeySpec createSecretKey() {
+    final String secretKey = Core.getConfiguration()
+        .getConstantValue("DatabaseReplication.SecretKey").toString();
+    return new SecretKeySpec(secretKey.getBytes(StandardCharsets.UTF_8), "AES");
+}
+```
+
+The AES key is the module constant **`DatabaseReplication.SecretKey`**, and its
+shipped default is **`n0cwq7cmwq978c0m`** — the same literal in every copy of the
+module downloaded from the marketplace (`SHOW CONSTANTS IN DatabaseReplication`).
+
+So AES/GCM is real, but out of the box it protects the source-database password
+with a publicly known key. Anyone with read access to the app database and a copy
+of the module can decrypt it. **Overriding that constant per environment is
+mandatory, not optional**, and nothing in the UI says so. Revised verdict:
+encryption at rest is a strength *only after* you rotate the key.
+
+### E14 — could the connector be batched? Yes, on two independent axes
+
+**Axis A — batch the read from the source.** Today `EXECUTE DATABASE QUERY`
+materialises the entire result set into one microflow list. Fine at 20 501 rows;
+an OOM at millions. The fix is keyset pagination in the query itself, which the
+connector already supports through parameters:
+
+```sql
+SELECT customer_id, full_name, email, city, updated_at
+FROM customers
+WHERE updated_at >= {fromTs} AND updated_at < {toTs}
+  AND (updated_at, customer_id) > ({lastTs}, {lastId})
+ORDER BY updated_at, customer_id
+LIMIT {pageSize}
+```
+
+with the microflow looping until a page returns fewer than `pageSize` rows.
+**Keyset, not `OFFSET`** — `OFFSET` degrades quadratically and can skip or repeat
+rows when the source is being written concurrently, which is exactly our case.
+
+**Axis B — batch the Mendix-side lookup.** This is the one the module solves with
+`RetrieveOQL_Limit`, and the harder half: a microflow cannot express
+`WHERE key IN (:list)` — XPath has no list-membership operator over a microflow
+list. Three ways out:
+
+1. **Range constraint** — `[CustomerId >= $min and CustomerId <= $max]`, one
+   retrieve per page. Exact and cheap *if the page is a contiguous key range*,
+   which keyset pagination ordered by the key gives you for free.
+2. **`EXECUTE DATABASE QUERY … DYNAMIC`** — mxcli's grammar supports dynamic SQL
+   on the connector call. Useful for building an `IN (…)` against the **source**,
+   but it does not help the Mendix-side retrieve, which is the bottleneck.
+3. **A Java action** doing a real `IN` — matches the module exactly, at the cost
+   of the Java the whole approach was trying to avoid.
+
+**The composition that falls out.** Order the *backfill* by primary key rather
+than by watermark: every page is then a contiguous key range, so option 1 gives
+one source read, one range retrieve and one commit per page — the module's design,
+without Java. Incremental runs stay ordered by watermark, where batches are small
+and targeted per-row retrieves already win (E11).
+
+That is the same batch-size switch E11 arrived at empirically, now with a reason:
+**backfill is key-ordered and batched; steady state is watermark-ordered and
+targeted.**
 
 ### Scenarios to run (in order)
 
